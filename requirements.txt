@@ -1,0 +1,14 @@
+fastapi==0.148.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+httpx==0.28.1
+openpyxl==3.1.5
+pillow==13.0.0
+qrcode==8.2
+numpy==2.5.4
+opencv-python-headless==5.0.0.93
+onnxruntime==1.31.0
+rapidocr_onnxruntime==1.4.4
+pypdfium2==5.14.0
+pywebview==6.2.1
+pyinstaller==6.22.3

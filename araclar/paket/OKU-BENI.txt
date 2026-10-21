@@ -1,0 +1,27 @@
+SINAV OKUYUCU
+=============
+
+Sınav kağıdı fotoğraflarından öğrencinin numarasını, adını ve her sorudan aldığı puanı okur, Excel'e aktarır.
+Tamamen çevrimdışı çalışır: yapay zekâ modeli bu paketin içindedir, internet gerekmez.
+Öğrenci fotoğrafları ve puanlar bilgisayarınızdan dışarı çıkmaz.
+
+KURULUM
+1. Bu klasörün tamamını bilgisayara kopyalayın (USB bellekten çalıştırmak da olur ama yavaştır).
+2. KUR.bat dosyasına çift tıklayın. Program kurulur, masaüstüne "Sınav Okuyucu" kısayolu konur ve program açılır.
+3. Windows Güvenlik Duvarı izin isterse "İzin ver" deyin (telefonun bağlanabilmesi için).
+
+TELEFON (Android)
+Programın ana sayfasındaki QR kodu telefonla okutun ve uygulamayı kurun.
+Telefon bilgisayarla aynı Wi-Fi'deyken uygulama bilgisayarı kendisi bulur.
+
+GEREKSİNİMLER
+- Windows 10 veya 11 (64 bit)
+- Bellek: 16 GB önerilir. 12 GB'tan az bellekte program kendiliğinden daha küçük (4B) modele geçer;
+  bu model daha hızlıdır ama daha çok hata yapar.
+- Diskte yaklaşık 13 GB boş yer
+- Ekran kartı şart değildir; varsa (NVIDIA/AMD/Intel) okuma hızlanır.
+
+EN DOĞRU OKUMA İÇİN
+Sınavı oluşturduktan sonra "Şablon" düğmesiyle, bir kağıt üzerinde her sorunun puanının yazıldığı
+yeri bir kez kutu içine alın. Sonra her kağıt şablona oturtulup her soru ayrı ayrı, yakından okunur.
+Ayrıntılı kullanım için programdaki ipuçlarına bakın.

@@ -1,0 +1,22 @@
+# Python sanal ortamı: her bilgisayarda kurulum.bat ile yeniden kurulur
+.venv/
+__pycache__/
+*.pyc
+
+# Android derleme çıktıları ve yerel SDK yolu (araclar\apk_derle.ps1 yeniden üretir)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+
+# Derlenmiş telefon uygulaması (araclar\apk_derle.ps1 ile üretilir)
+app/static/SinavOkuyucu.apk
+
+# Öğrenci verileri depoya hiç girmez (program onları %LOCALAPPDATA%\SinavOkuyucu altında tutar)
+*.log
+
+# Gerçek kağıtlarla yapılan testlerin dosyaları (fotoğraf yolları, öğrenci adı/numarası, doğru puanlar) yerelde kalır
+araclar/kagitlar.json
+araclar/sablon_10c.json

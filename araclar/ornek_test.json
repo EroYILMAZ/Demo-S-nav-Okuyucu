@@ -1,0 +1,18 @@
+{
+  "_aciklama": "Doğruluk testlerinin dosya biçimi (uydurma örnek). Gerçek kağıt fotoğrafları ve doğru puanlar depoya konmaz: kendi bilgisayarınızda kagitlar.json / sablon_10c.json gibi bir dosya oluşturun (.gitignore'da). Şablonlu test: araclar/sablon_testi.py; şablonsuz: araclar/otomatik_testi.py",
+  "sablon_sayfalari": ["C:/yol/sablon_sayfa1.jpg", "C:/yol/sablon_sayfa2.jpg"],
+  "kutular": [
+    {"soru": 1, "sayfa": 0, "x": 0.10, "y": 0.13, "w": 0.18, "h": 0.10},
+    {"soru": 2, "sayfa": 0, "x": 0.07, "y": 0.43, "w": 0.15, "h": 0.12}
+  ],
+  "tam": [10, 10],
+  "kagitlar": [
+    {
+      "ad": "örnek öğrenci",
+      "resimler": ["C:/yol/ogrenci_sayfa1.jpg", "C:/yol/ogrenci_sayfa2.jpg"],
+      "dogru": [10, 7],
+      "no": "247",
+      "liste": [{"no": "247", "ad": "Deniz Kaya"}, {"no": "412", "ad": "Ayşe Demir"}]
+    }
+  ]
+}

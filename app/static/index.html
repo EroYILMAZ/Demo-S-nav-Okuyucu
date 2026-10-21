@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d4f7c">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <title>Sınav Okuyucu</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#/" class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="4"/><path d="M7 8h6M7 12h4M7 16h5"/><path d="M14.5 14.5l2 2 3.5-4"/></svg>
+      <span>Sınav Okuyucu</span>
+    </a>
+    <div class="topbar-right">
+      <span id="status" class="status"><i></i><span>…</span></span>
+      <button class="icon-btn" id="settings-btn" title="Ayarlar" aria-label="Ayarlar"></button>
+    </div>
+  </header>
+  <main id="view"></main>
+
+  <div id="modal" class="modal" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <div id="modal-body"></div>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
