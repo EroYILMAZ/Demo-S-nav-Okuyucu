@@ -234,6 +234,36 @@ rec = c.get(f"/api/sinavlar/{ex5['id']}").json()["kayitlar"][0]
 r = c.post(f"/api/sinavlar/{ex5['id']}/kagit", files=[("dosyalar", ("s.jpg", jpg("tek sayfa"), "image/jpeg"))], data={"kayit_id": rec["id"]}).json()
 ok(r["sayfa"] == 1, "var olan kağıda sayfa eklerken fotoğraf bölünmüyor")
 
+print("Kontrol ekranı için puan kutusu resimleri")
+ex6 = c.post("/api/sinavlar", json={"sinif": "K", "tam_puanlar": [10, 10]}).json()
+rid6 = c.post(f"/api/sinavlar/{ex6['id']}/kagit", files=[("dosyalar", ("k.jpg", jpg("kutu"), "image/jpeg"))]).json()["kayitlar"][0]
+
+
+def fake_read(images, maxes, settings, progress=None, **kw):
+    return {"kutular": {0: Image.new("RGB", (200, 120), "white"), 1: Image.new("RGB", (200, 120), "blue")},
+            "ogrenci_no": "247", "ad_soyad": "Deniz Kaya", "puanlar": [10.0, 7.0], "yazili_toplam": None, "supheli": {},
+            "eminlik": {"puan": [1.0, 1.0], "alternatif": {}, "no": 1.0, "ad": 1.0, "toplam": None, "toplam_tutuyor": False},
+            "liste_secimi": None, "duzen": {}, "ham": []}
+
+
+main.recognize_auto = fake_read
+main._process(ex6["id"], rid6)
+k6 = c.get(f"/api/sinavlar/{ex6['id']}").json()["kayitlar"][0]
+names6 = list((k6.get("kutu_resimleri") or {}).values())
+ok(k6["durum"] == "tamam" and len(names6) == 2, f"okunan kağıdın iki kutu resmi kaydedildi: {k6.get('kutu_resimleri')}")
+ok(all(c.get(f"/api/sinavlar/{ex6['id']}/resim/{n}").status_code == 200 for n in names6), "kutu resimleri sunuluyor")
+main._process(ex6["id"], rid6)  # durum 'tamam' olduğu için atlanır (yeniden okuma yalnızca kuyruktan)
+c.post(f"/api/sinavlar/{ex6['id']}/kagit/{rid6}/tekrar")
+main._jobs.get_nowait()
+main._process(ex6["id"], rid6)
+k6b = c.get(f"/api/sinavlar/{ex6['id']}").json()["kayitlar"][0]
+gone = all(not (main.store.image_dir(ex6["id"]) / n).exists() for n in names6)
+ok(gone and len(k6b["kutu_resimleri"]) == 2, "yeniden okununca eski kutu resimleri silindi, yenileri geldi")
+c.post(f"/api/sinavlar/{ex6['id']}/resimleri-sil")
+k6c = c.get(f"/api/sinavlar/{ex6['id']}").json()["kayitlar"][0]
+ok(not k6c["kutu_resimleri"] and not any((main.store.image_dir(ex6["id"]) / n).exists() for n in k6b["kutu_resimleri"].values()),
+   "fotoğrafları sil, kutu resimlerini de siliyor (KVKK)")
+
 print("Kurşun kalem süzgeci")
 import numpy as np  # noqa: E402
 from app import kalem  # noqa: E402

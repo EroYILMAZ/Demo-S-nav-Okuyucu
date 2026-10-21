@@ -250,6 +250,18 @@ def _process(exam_id: str, rec_id: str) -> None:
         _set_error(exam_id, rec_id, str(e))
         return
     _engine.update(durum="", zaman=time.time())
+    # her sorunun puan kutusu küçük resim olarak saklanır: kontrol ekranında okunan değerin yanında gösterilir
+    box_images: dict[str, str] = {}
+    for i, im in (result.pop("kutular", None) or {}).items():
+        try:
+            im = im.convert("RGB")
+            im.thumbnail((360, 360), Image.LANCZOS)
+            name = store.new_id() + ".jpg"
+            im.save(store.image_dir(exam_id) / name, "JPEG", quality=85)
+            box_images[str(i)] = name
+        except Exception:
+            continue
+    old_boxes: list[str] = []
 
     def save(e):
         e["duzen"] = {**(e.get("duzen") or {}), **result["duzen"]}
@@ -257,6 +269,8 @@ def _process(exam_id: str, rec_id: str) -> None:
         if r.get("durum") != "isleniyor" or r.get("resimler") != pages_at_start:
             raise _Skip  # okunurken sayfa eklendi/geri alındı: yeni kuyruk girdisi yeniden okuyacak
         n = len(e["tam_puanlar"])  # okunurken soru sayısı değişmiş olabilir
+        old_boxes.extend((r.get("kutu_resimleri") or {}).values())
+        r["kutu_resimleri"] = {k: v for k, v in box_images.items() if int(k) < n}
         conf = result["eminlik"]
         no, ad, warn, info, kimlik = resolve_student(result["ogrenci_no"], result["ad_soyad"], e["ogrenci_listesi"],
                                                      conf["no"], result.get("liste_secimi"))
@@ -284,7 +298,9 @@ def _process(exam_id: str, rec_id: str) -> None:
     try:
         store.update_exam(exam_id, save)
     except (KeyError, _Skip):
-        pass
+        old_boxes[:] = list(box_images.values())  # kaydedilmedi: yeni kutu resimleri artık
+    for name in old_boxes:
+        (store.image_dir(exam_id) / name).unlink(missing_ok=True)
 
 
 def _identify(exam_id: str, rec_id: str) -> None:
@@ -1070,6 +1086,7 @@ def kagit_sil(exam_id: str, rec_id: str):
         for r in e["kayitlar"]:
             if r["id"] == rec_id:
                 removed.extend(r["resimler"])
+                removed.extend((r.get("kutu_resimleri") or {}).values())
             else:
                 keep.append(r)
         e["kayitlar"] = keep
@@ -1106,7 +1123,9 @@ def resimleri_sil(exam_id: str):
             raise HTTPException(400, "Okunmayı bekleyen kağıtlar var")
         for r in e["kayitlar"]:
             removed.extend(r.get("resimler") or [])
+            removed.extend((r.get("kutu_resimleri") or {}).values())
             r["resimler"] = []
+            r["kutu_resimleri"] = {}
         e["ozetler"] = {}
         keep.update((e.get("sablon") or {}).get("sayfalar", []))  # şablon, yeni kağıtlar için gerekli
     store.update_exam(exam_id, fn)

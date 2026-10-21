@@ -380,8 +380,9 @@ document.getElementById("settings-btn").onclick = async () => {
             .filter((m) => m === "kapali" || m !== f_model(d))
             .map((m) => `<option value="${esc(m)}" ${m === (d.ayarlar.ikinci_model || "kapali") ? "selected" : ""}>${m === "kapali" ? "Kapalı" : esc(m) + ((d.ollama.modeller || []).includes(m) ? "" : " (yüklü değil)")}</option>`).join("")}</select>
         </label>
-        <p class="hint">Okunan her puan, farklı eğitilmiş ikinci bir modelle bir kez daha okunur; tutmazsa hücre kontrole düşer.
-        Okumayı biraz uzatır ama sessiz hata riskini azaltır (önerilen: minicpm-v:8b).</p>
+        <p class="hint">Okunan puanlar, farklı eğitilmiş ikinci bir modelle bir kez daha okunur; tutmazsa hücre kontrole düşer.
+        Kağıt başına tek okuma ekler ama ikinci model ~5,5 GB yer ve 16 GB bellek ister; yüklü değilse bu kontrol atlanır
+        (önerilen: minicpm-v:8b).</p>
         <div class="form-grid" style="margin-top:12px">
           <label class="f">Çözünürlük (piksel)<input name="max_kenar" type="number" min="512" max="3000" value="${d.ayarlar.max_kenar}"></label>
           <label class="f">Zaman aşımı (sn)<input name="zaman_asimi" type="number" min="30" max="3600" value="${d.ayarlar.zaman_asimi}"></label>
@@ -893,11 +894,31 @@ function openReview(id) {
   state.reviewId = id;
   const name = r.ad_soyad || "Kağıt";
   const pics = r.resimler.map((n) => `<img src="/api/sinavlar/${state.exam.id}/resim/${n}" alt="Sayfa">`).join("");
+  // her sorunun puan kutusu, okunan değerle yan yana: öğretmen bütün kağıdı aramadan bir bakışta doğrular
+  const kr = r.durum === "tamam" ? (r.kutu_resimleri || {}) : {};
+  const cw = r.hucre_uyarilari || {};
+  const boxes = Object.keys(kr).length ? `<div class="boxes">${state.exam.tam_puanlar.map((mx, i) => kr[i]
+    ? `<button type="button" class="bx ${cw[`p${i}`] && !r.onaylandi ? "w" : ""}" data-focus-q="${i}" title="${esc(cw[`p${i}`] || `S${i + 1}`)}">
+        <img src="/api/sinavlar/${state.exam.id}/resim/${kr[i]}" alt="S${i + 1} kutusu"><span>S${i + 1} /${fmt(mx)}</span><b data-bx="${i}">${esc(fmt(r.puanlar?.[i])) || "—"}</b></button>`
+    : `<div class="bx none"><span>S${i + 1}</span><b>${esc(fmt(r.puanlar?.[i])) || "—"}</b></div>`).join("")}</div>` : "";
   const body = r.durum === "tamam" ? formHtml(r) : `<div class="side"><p class="muted">${isBusy(r) ? "Bu kağıt henüz okunuyor." : esc(r.hata || "")}</p></div>`;
   openModal(`${head(`${esc(name)}${r.ogrenci_no ? ` <span class="muted small">· ${esc(r.ogrenci_no)}</span>` : ""}`)}
-    <div class="review"><div class="pic">${pics || '<div class="empty">Fotoğraf silinmiş.</div>'}</div>${body}</div>`, { wide: true });
-  $modalBody.querySelectorAll(".pic img").forEach((img) => (img.onclick = () => img.classList.toggle("zoom")));
+    <div class="review"><div class="pic">${boxes}${pics || '<div class="empty">Fotoğraf silinmiş.</div>'}</div>${body}</div>`, { wide: true });
+  $modalBody.querySelectorAll(".pic > img").forEach((img) => (img.onclick = () => img.classList.toggle("zoom")));
+  $modalBody.querySelectorAll("[data-focus-q]").forEach((b) => (b.onclick = () => {
+    const inp = $modalBody.querySelector(`.vform input[data-q="${b.dataset.focusQ}"]`);
+    if (inp) { inp.focus(); inp.select(); }
+  }));
+
 }
+
+// kontrol ekranında puan düzeltilince kutu kartındaki değer de değişsin (form yeniden çizilse de çalışır)
+document.addEventListener("input", (e) => {
+  const inp = e.target.closest?.(".vform input[data-q]");
+  if (!inp) return;
+  const b = $modalBody.querySelector(`[data-bx="${inp.dataset.q}"]`);
+  if (b) b.textContent = inp.value.trim() || "—";
+});
 
 function nextToCheck(fromId) {
   const list = visibleRecords().filter((x) => x.durum === "tamam");

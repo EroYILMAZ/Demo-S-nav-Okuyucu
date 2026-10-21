@@ -304,8 +304,17 @@ body.dropping::after {
 .review { display: grid; grid-template-columns: 1fr; }
 @media (min-width: 860px) { .review { grid-template-columns: minmax(0, 1fr) 340px; height: calc(100vh - 32px - 53px); } }
 .review .pic { background: #2a2f36; overflow: auto; min-height: 50vh; }
-.review .pic img { display: block; width: 100%; height: auto; cursor: zoom-in; }
-.review .pic img.zoom { width: 220%; max-width: none; cursor: zoom-out; }
+.review .pic > img { display: block; width: 100%; height: auto; cursor: zoom-in; }
+.review .pic > img.zoom { width: 220%; max-width: none; cursor: zoom-out; }
+.review .boxes { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; padding: 10px; }
+.boxes .bx { display: grid; grid-template-columns: 1fr auto; grid-template-rows: 92px auto; align-items: center; gap: 2px 6px;
+  padding: 6px; border: 1px solid #d5dae1; border-radius: var(--radius); background: #fff; color: #1b2230; cursor: pointer; font: inherit; text-align: left; }
+.boxes .bx img { grid-column: 1 / -1; width: 100%; height: 92px; object-fit: contain; }
+.boxes .bx span { font-size: 11px; color: #5b6472; }
+.boxes .bx b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.boxes .bx.w { border-color: #e0a800; box-shadow: inset 0 0 0 2px #f2c94c; background: #fffaeb; }
+.boxes .bx.none { grid-template-rows: auto; cursor: default; opacity: .7; }
+.boxes .bx:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .review .side { padding: 14px 16px; overflow: auto; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
 .vform .who { display: grid; grid-template-columns: 90px 1fr; gap: 8px; }
 .vform .cell { padding: 0; }

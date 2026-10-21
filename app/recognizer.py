@@ -633,6 +633,157 @@ NO_PEN_NOTE = ("Bu kutuda renkli kalemle yazılmış puan yok (puanlar siyah kal
                "“yalnızca renkli tükenmez kalem” seçeneğini kapatın)")
 
 
+# ------------------------------------------------------------------ toplu okuma (bir kağıdın bütün kutuları tek görüntüde)
+#
+# Her kutuyu ayrı ayrı okumak kağıt başına ~50 model çağrısı demekti (bu bilgisayarda ~30 dakika). Kutular harflerle
+# tek görüntüye dizilip bir çağrıda okunur. Her bakışta kutuların yeri ve harfi değişir (konumdan kaynaklanan yanılgı
+# tekrarlanmasın). Bakışlar tutmazsa yalnızca o kutular tek tek, yakından yeniden okunur.
+
+GRID_PEN_PROMPT = """This image shows {n} separate boxes, each marked with a black letter label ({labels}).
+Each box is a close-up of one score that a teacher handwrote on a graded exam; only the colored pen marks are kept,
+everything else was erased. The score is usually circled. For every label, read the teacher's number in that box.
+Read each box on its own. If a box shows no number, answer -1 for it.
+Turkish handwriting: the digit 4 is often written open at the top, looking like "u" or "ч"; 7 may have a crossbar;
+1 may be a single stroke; a score can also be a decimal like 7,5 (write it as 7.5). A "+" sign before a number is not part of it."""
+
+GRID_ORIG_PROMPT = """This image shows {n} separate boxes, each marked with a black letter label ({labels}).
+Each box is a close-up crop of a graded exam where the teacher handwrote a score (usually circled, in colored pen).
+For every label, read the teacher's number in that box. A small printed question label like "2-)" is NOT the score;
+ignore printed text and the student's calculations. If a box shows no teacher score, answer -1 for it.
+Turkish handwriting: the digit 4 is often written open at the top, looking like "u" or "ч"; 7 may have a crossbar;
+1 may be a single stroke. A "+" sign before a number is not part of it."""
+
+GRID_LABEL_PROMPT = """This image shows {n} separate parts of a graded Turkish exam paper, each marked with a black letter label
+({labels}). In every part a red rectangle marks a score the teacher wrote. For every label, answer which question that
+score belongs to: each question starts with a printed question number such as "5-)", "5)", "5." or "Soru 5", usually
+just left of or above the score. If no question number is visible in a part, answer -1 for it."""
+
+GRID_CELL = 320
+GRID_COLS = 5
+GRID_MAX = 10   # bir görüntüde en fazla bu kadar kutu (daha fazlası ayrı görüntülere bölünür)
+GRID_VIEWS = [("kalem", 0.10, 1), ("kalem_genis", 0.35, 2), ("kalem_siki", 0.0, 3), ("kalem_orta", 0.22, 4)]
+CLOSE_WEIGHT = 1.2  # tek tek yakından okuma, eşitlikte toplu bakışı geçsin
+
+_font_cache: dict = {}
+
+
+def _label_font(size: int):
+    from PIL import ImageFont
+    if size not in _font_cache:
+        f = None
+        for name in ("arialbd.ttf", "arial.ttf", "DejaVuSans-Bold.ttf"):
+            try:
+                f = ImageFont.truetype(name, size)
+                break
+            except OSError:
+                continue
+        _font_cache[size] = f or ImageFont.load_default()
+    return _font_cache[size]
+
+
+def grid_image(crops: list, labels: list[str], cell: int = GRID_CELL, cols: int = GRID_COLS) -> Image.Image:
+    """Kırpımları harf etiketli hücrelere dizer (siyah harf; renkli mürekkeple karışmaz)."""
+    from PIL import ImageDraw
+    cols = min(cols, len(crops))
+    rows = (len(crops) + cols - 1) // cols
+    head = cell // 7
+    g = Image.new("RGB", (cols * cell, rows * (cell + head)), "white")
+    d = ImageDraw.Draw(g)
+    f = _label_font(int(head * 0.8))
+    for i, (c, lab) in enumerate(zip(crops, labels)):
+        x, y = (i % cols) * cell, (i // cols) * (cell + head)
+        im = Image.fromarray(c) if isinstance(c, np.ndarray) else c.copy()
+        if im.width and im.height:
+            k = (cell - 16) / max(im.size)
+            im = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS)
+            g.paste(im, (x + (cell - im.width) // 2, y + head + (cell - im.height) // 2))
+        d.rectangle([x + 2, y + 2, x + cell - 3, y + head + cell - 3], outline=(0, 0, 0), width=3)
+        d.text((x + 10, y + 3), lab, fill=(0, 0, 0), font=f)
+    return g
+
+
+def ask_grid(llm: "_Ollama", crops: list, prompt: str, cell: int = GRID_CELL, cols: int = GRID_COLS) -> list:
+    """Kırpımları (en fazla GRID_MAX'lık görüntülerle) toplu okur. Dönüş: her kırpım için sayı ya da None."""
+    out: list = []
+    for start in range(0, len(crops), GRID_MAX):
+        part = crops[start:start + GRID_MAX]
+        labels = [chr(ord("A") + i) for i in range(len(part))]
+        schema = {"type": "object", "properties": {lab: {"type": "number"} for lab in labels}, "required": labels}
+        img = grid_image(part, labels, cell, cols)
+        ans = llm.ask(prompt.format(n=len(part), labels=", ".join(labels)), img, schema, side=max(img.size),
+                      logprobs=False)
+        for lab in labels:
+            v = parse_number(ans.data.get(lab))
+            out.append(None if v is None or v < 0 else v)
+    return out
+
+
+def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
+    """Bir kağıdın bütün puan kutularını toplu okur. items: [(asıl sayfa, renkli kalem sayfası, Box)].
+    Dönüş, her kutu için _read_box ile aynı biçimde: {"deger", "eminlik", "oylar", "not", "kontrol"}."""
+    import random
+
+    from . import sablon
+
+    n = len(items)
+    votes: list[list] = [[] for _ in range(n)]
+    results: list[dict | None] = [None] * n
+    active = []
+    for i, (_page, pen, box) in enumerate(items):
+        near = sablon.crop(pen, box, 0.35)
+        if near.size == 0 or int((near < 245).any(axis=2).sum()) < 40:
+            results[i] = {"deger": None, "eminlik": 0.0, "oylar": [], "not": NO_PEN_NOTE, "kontrol": None}
+        else:
+            active.append(i)
+    if not active:
+        return results
+
+    for vi, (vname, pad, seed) in enumerate(GRID_VIEWS):
+        if progress:
+            progress(f"Puanlar okunuyor (bakış {vi + 1}/{len(GRID_VIEWS) + 1})…")
+        order = list(active)
+        random.Random(seed).shuffle(order)
+        vals = ask_grid(llm, [sablon.crop(items[i][1], items[i][2], pad) for i in order], GRID_PEN_PROMPT)
+        for i, v in zip(order, vals):
+            votes[i].append((vname, v, 0.0, 1.0))
+
+    # bakışlar tutmayan kutular: tek tek, yakından ek okumalar (toplu görüntünün bağlamından bağımsız)
+    disputed = [i for i in active if len({v for _n, v, _c, _w in votes[i]}) > 1]
+    for k, i in enumerate(disputed):
+        if progress:
+            progress(f"Tutmayan puan yakından okunuyor ({k + 1}/{len(disputed)})…")
+        pen, box = items[i][1], items[i][2]
+        for name, pad, _ink, _w in _PEN_EXTRA:
+            part = sablon.crop(pen, box, pad)
+            if part.size == 0:
+                continue
+            ans = llm.ask(INK_PROMPT, Image.fromarray(part), SCORE_SCHEMA, side=CROP_SIDE, logprobs=False)
+            v = parse_number(ans.data.get("score"))
+            votes[i].append((name, None if v is None or v < 0 else v, 0.0, CLOSE_WEIGHT))
+
+    # çapraz kontrol: süzgeçsiz görüntüden bir toplu bakış (değer yine renkli kalemden alınır)
+    if progress:
+        progress(f"Puanlar okunuyor (bakış {len(GRID_VIEWS) + 1}/{len(GRID_VIEWS) + 1}, süzgeçsiz)…")
+    plain = ask_grid(llm, [sablon.crop(items[i][0], items[i][2], 0.25) for i in active], GRID_ORIG_PROMPT)
+
+    for i, v_plain in zip(active, plain):
+        value, top, total = sablon.weighted_vote([(v, w) for _n, v, _c, w in votes[i]])
+        notes = []
+        if top < total:
+            notes.append("Okumalar farklı: " + " / ".join("—" if v is None else f"{v:g}" for _n, v, _c, _w in votes[i]))
+        oylar = votes[i] + [("suzgecsiz", v_plain, 0.0, 0)]
+        if value is None:
+            results[i] = {"deger": None, "eminlik": 0.0, "oylar": oylar, "not": "Bu kutuda öğretmen puanı bulunamadı",
+                          "kontrol": None}
+            continue
+        if v_plain != value:
+            notes.append(f"Süzgeçsiz görüntüde {'puan yok' if v_plain is None else f'{v_plain:g}'} okundu "
+                         "(kurşun kalem eki ya da silik mürekkep olabilir)")
+        results[i] = {"deger": value, "eminlik": top / total if total else 0.0, "oylar": oylar, "not": "; ".join(notes),
+                      "kontrol": Image.fromarray(sablon.crop(items[i][1], items[i][2], 0.22))}
+    return results
+
+
 def second_opinion(settings: dict, items: list[tuple], progress=None) -> dict:
     """Okunan puanları farklı bir modelle (ayarlardaki ikinci model) bir kez daha okur. items: [(anahtar, görüntü)].
     Dönüş: {anahtar: değer|None}. İkinci model yüklü değilse boş döner. Bütün kutular arka arkaya okunur: iki model
@@ -644,14 +795,10 @@ def second_opinion(settings: dict, items: list[tuple], progress=None) -> dict:
     if not st.get("model_yuklu"):
         return {}
     llm2 = _Ollama(dict(settings, model=model))
-    out = {}
-    for i, (key, im) in enumerate(items):
-        if progress:
-            progress(f"İkinci model kontrol ediyor ({i + 1}/{len(items)})…")
-        ans = llm2.ask(INK_PROMPT, im, SCORE_SCHEMA, side=CROP_SIDE, logprobs=False)
-        v = parse_number(ans.data.get("score"))
-        out[key] = None if v is None or v < 0 else v
-    return out
+    if progress:
+        progress("İkinci model kontrol ediyor…")
+    vals = ask_grid(llm2, [im for _k, im in items], GRID_PEN_PROMPT)
+    return {key: v for (key, _im), v in zip(items, vals)}
 
 
 def apply_second_opinion(scores: list, suspicious: dict, checks: dict, model: str) -> None:
@@ -787,17 +934,31 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
     confs: list[float] = [0.0] * n
     suspicious: dict[str, str] = {}
     to_check: list[tuple] = []
+    readable = []
     for q in range(1, n + 1):
         box = next((b for b in bx if b.soru == q), None)
         if box is None:
             suspicious[str(q - 1)] = "Şablonda bu sorunun kutusu yok"
-            continue
-        if box.sayfa not in warped:
+        elif box.sayfa not in warped:
             suspicious[str(q - 1)] = f"Şablonun {box.sayfa + 1}. sayfası bu kağıtta bulunamadı"
+        else:
+            readable.append((q, box))
+    tot_box = next((b for b in bx if b.soru == -1), None)
+    if tot_box is not None and tot_box.sayfa in warped:
+        readable.append((-1, tot_box))
+    batch = {}
+    if pen and readable:
+        rs = read_boxes(llm, [(warped[b.sayfa][0], pen_pages[b.sayfa], b) for _q, b in readable], progress)
+        batch = {q: r for (q, _b), r in zip(readable, rs)}
+    for q, box in readable:
+        if q == -1:
             continue
-        if progress:
-            progress(f"{q}. soru okunuyor ({q}/{n})…")
-        r = _read_box(llm, warped[box.sayfa][0], box, maxes, pen_pages.get(box.sayfa))
+        if q in batch:
+            r = batch[q]
+        else:
+            if progress:
+                progress(f"{q}. soru okunuyor ({q}/{n})…")
+            r = _read_box(llm, warped[box.sayfa][0], box, maxes, pen_pages.get(box.sayfa))
         raw.append({"soru": q, "oylar": [(name, v, round(c, 3), w) for name, v, c, w in r["oylar"]]})
         scores[q - 1], confs[q - 1] = r["deger"], r["eminlik"]
         if r["not"]:
@@ -811,9 +972,8 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
 
     # kağıdın toplamı: şablonda kutusu varsa oradan, yoksa başlıktan
     total, p_total = None, 0.0
-    tot_box = next((b for b in bx if b.soru == -1), None)
     if tot_box is not None and tot_box.sayfa in warped:
-        r = _read_box(llm, warped[tot_box.sayfa][0], tot_box, maxes, pen_pages.get(tot_box.sayfa))
+        r = batch.get(-1) or _read_box(llm, warped[tot_box.sayfa][0], tot_box, maxes, pen_pages.get(tot_box.sayfa))
         total, p_total = r["deger"], r["eminlik"]
     elif pen:
         # toplam yalnızca renkli kalemden (başlık okuması kurşun kalemle yazılmış bir sayıyı da görebilir)
@@ -836,7 +996,10 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
 
     if unaligned:
         raw.append({"uyari": f"{', '.join(map(str, unaligned))}. fotoğraf şablona oturtulamadı"})
+    # kontrol ekranı için her sorunun kutusu (süzgeçsiz: öğretmen kağıtta ne yazdığını görsün)
+    crops = {q - 1: Image.fromarray(sablon.crop(warped[b.sayfa][0], b, 0.25)) for q, b in readable if q > 0}
     return {
+        "kutular": crops,
         "ogrenci_no": no0,
         "ad_soyad": " ".join(str(header.get("student_name") or "").split()),
         "puanlar": scores,
@@ -980,12 +1143,10 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
         choice = choose_from_roster(top, roster, settings)
         raw.append({"liste_secimi": choice})
 
-    # her adayı yakından oku; sayı olanların soru numarasını da oku
-    reads = []  # (aday, okuma sonucu, okunan soru numarası)
-    for ci, (pi, _col, _y, _x, box) in enumerate(found):
-        if progress:
-            progress(f"Puanlar okunuyor ({ci + 1}/{len(found)})…")
-        r = _read_box(llm, page_arrays[pi], box, maxes, pen_pages[pi])
+    # bütün adayları toplu oku; sayı olanların hangi soruya ait olduğunu da toplu oku
+    rs = read_boxes(llm, [(page_arrays[f[0]], pen_pages[f[0]], f[4]) for f in found], progress)
+    scored = []
+    for ci, ((pi, _col, _y, _x, box), r) in enumerate(zip(found, rs)):
         if r["deger"] is None:
             raw.append({"aday": ci + 1, "oylar": [(nm, v) for nm, v, _c, _w in r["oylar"]], "sonuc": "puan değil"})
             continue
@@ -996,9 +1157,13 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
         crop = im.crop(ctx).copy()
         ImageDraw.Draw(crop).rectangle([bx - ctx[0], by - ctx[1], bx + bw - ctx[0], by + bh - ctx[1]],
                                        outline=(230, 0, 0), width=max(3, int(0.004 * W)))
-        lans = llm.ask(LABEL_PROMPT, crop, LABEL_SCHEMA, side=1024)
-        lab = lans.data.get("question")
-        lab = int(lab) if isinstance(lab, (int, float)) and 1 <= int(lab) <= n else None
+        scored.append((ci, pi, box, r, crop))
+    if progress and scored:
+        progress("Puanların hangi soruya ait olduğu okunuyor…")
+    labels = ask_grid(llm, [c for *_x, c in scored], GRID_LABEL_PROMPT, cell=420, cols=4) if scored else []
+    reads = []  # (aday, okuma sonucu, okunan soru numarası)
+    for (ci, pi, box, r, _crop), lab in zip(scored, labels):
+        lab = int(lab) if lab is not None and float(lab).is_integer() and 1 <= int(lab) <= n else None
         reads.append((box, r, lab))
         raw.append({"aday": ci + 1, "sayfa": pi + 1, "oylar": [(nm, v) for nm, v, _c, _w in r["oylar"]], "soru_no": lab})
 
@@ -1016,11 +1181,13 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
     suspicious: dict[str, str] = {}
     extra = []
     to_check: list[tuple] = []
+    crops = {}
     for (box, r, lab), q in zip(reads, assign):
         if q is None:
             extra.append(f"{r['deger']:g}")
             continue
         i = q - 1
+        crops[i] = Image.fromarray(sablon.crop(page_arrays[box.sayfa], box, 0.25))
         scores[i], confs[i] = r["deger"], r["eminlik"]
         if r.get("kontrol") is not None:
             to_check.append((i, r["kontrol"]))
@@ -1050,6 +1217,7 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
     if total_ok and p_total >= 0.9:
         confs = [max(c, min(0.99, p_total)) for c in confs]
     return {
+        "kutular": crops,
         "ogrenci_no": no0,
         "ad_soyad": " ".join(str(header.get("student_name") or "").split()),
         "puanlar": scores,
