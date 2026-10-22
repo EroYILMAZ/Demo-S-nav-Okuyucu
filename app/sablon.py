@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image
 
 MIN_INLIERS = 60  # bundan az eşleşme: fotoğraf şablona güvenle oturtulamadı
+MIN_SPAN = 0.3    # eşleşen noktalar şablon sayfasının en az bu kadar enine ve boyuna yayılmalı
 
 
 @dataclass
@@ -55,7 +56,7 @@ class Aligner:
         kp, des = self.orb.detectAndCompute(g, None)
         return kp, des, k
 
-    def _homography(self, src_feat, tpl_feat, src_shape):
+    def _homography(self, src_feat, tpl_feat, src_shape, tpl_shape):
         kp1, d1, k1 = src_feat
         kp2, d2, k2 = tpl_feat
         if d1 is None or d2 is None or len(kp1) < 10 or len(kp2) < 10:
@@ -70,6 +71,12 @@ class Aligner:
         if H is None:
             return None, 0
         inliers = int(mask.sum())
+        # Eşleşmeler sayfanın yalnızca bir şeridinde toplandıysa (her sınavda aynı olan okul başlığı) fotoğraf başka bir
+        # kağıt olabilir: kutular o kağıdın alakasız yerlerine düşer ve oradaki bir renkli işaret puan diye okunurdu.
+        inl = p2[mask.ravel() == 1]
+        span = (inl.max(axis=0) - inl.min(axis=0)) / np.float32([tpl_shape[1], tpl_shape[0]])
+        if span.min() < MIN_SPAN:
+            return None, 0
         # aşırı bükülmüş (yanlış) eşleşmeleri ele: fotoğrafın köşeleri dışbükey bir dörtgene gitmeli
         h, w = src_shape[:2]
         corners = cv2.perspectiveTransform(np.float32([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]]), H)
@@ -86,7 +93,7 @@ class Aligner:
             order.insert(0, page_hint)
         best = (None, None, 0)
         for i in order:
-            H, inl = self._homography(feat, self.feats[i], photo.shape)
+            H, inl = self._homography(feat, self.feats[i], photo.shape, self.pages[i].shape)
             if H is not None and inl > best[2]:
                 best = (i, H, inl)
             if page_hint == i and inl >= 3 * MIN_INLIERS:

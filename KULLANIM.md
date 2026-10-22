@@ -122,6 +122,11 @@ nedeni satırın altında ve hücrenin üzerine gelince yazar:
 - Sayfa eksik ya da fotoğraf şablona oturtulamadı; puan kutusu fotoğrafın dışında kalıyor (kağıt kırpılmış çekilmiş).
 - Şablonsuz okumada puanın hangi soruya ait olduğu basılı soru numarasıyla doğrulanamadı, ya da kağıtta sorusu
   belirlenemeyen fazladan bir puan var. Puanlar bütün sayfadan okunduysa (renkli puan bulunamadı) her hücre işaretlenir.
+- Şablonsuz okumada puanlar bir soru kaymış olabilir: kağıtta puan olmayabilecek bir renkli işaret (öğrencinin mavi
+  kalemle yazdığı bir rakam, tik) okunmuşsa ya da bir puan hiçbir soruya bağlanamayıp bir soru puansız kaldıysa,
+  sıranın etkilediği hücrelerin hepsi kontrole düşer. Puan fotoğrafın kenarında kesiliyorsa da hücre işaretlenir.
+- Fotoğraf şablona yalnızca okul başlığı gibi küçük bir şeritle oturuyorsa (başka bir sınavın kağıdı olabilir)
+  şablona oturtulamadı sayılır.
 - Soru sayısı ya da tam puanlar sonradan değişirse onaylanmış kağıtların onayı kalkar (yeni soru da kontrol edilsin).
 
 Bir hücreyi elle düzeltirseniz o hücrenin uyarısı kalkar. **Onayla** ile kağıt kontrol listesinden çıkar.

@@ -852,6 +852,9 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
             # renkli kalemde sayı okunamadı; süzgeçsiz bakış bir şey okuduysa öğretmene ipucu olarak yaz (değeri yazma:
             # süzgeçsiz görüntü kurşun kalemi de görür, öğretmen bakıp karar vermeli)
             hint = f" (süzgeçsiz görüntüde {v_plain:g} okundu, kağıda bakın)" if v_plain is not None else ""
+            seen = sorted({v for _n, v, _c, _w in votes[i] if v is not None})
+            if seen:  # bakışların azı bir sayı gördü (silik ya da yarım kalmış puan olabilir)
+                hint += f" (bazı bakışlarda {' / '.join(f'{v:g}' for v in seen)} okundu)"
             results[i] = {"deger": None, "eminlik": 0.0, "oylar": oylar, "not": "Bu kutuda öğretmen puanı bulunamadı" + hint,
                           "kontrol": None}
             continue
@@ -1161,6 +1164,26 @@ def find_score_marks(page: np.ndarray) -> tuple[list, np.ndarray]:
     return marks, only
 
 
+def _mark_at_edge(only: np.ndarray, box) -> bool:
+    """Puan kümesinin mürekkebi fotoğrafın kenarına değiyor mu? Kağıt kırpılarak çekilmişse kenarda kesilen bir rakam
+    ("10"un yalnızca "1"i) bütün bakışlarda aynı, yanlış okunurdu. (Şablonlu okumadaki _box_cut_off'un karşılığı.)"""
+    H, W = only.shape[:2]
+    x1, y1 = int(box.x * W), int(box.y * H)
+    x2, y2 = int(round((box.x + box.w) * W)), int(round((box.y + box.h) * H))
+    ink = (only[y1:y2, x1:x2] < 245).any(axis=2)
+    m = 3  # kenara bu kadar piksel yakın mürekkep kenara değiyor sayılır
+    touch = 0
+    if y1 < m:
+        touch += int(ink[:m - y1].sum())
+    if y2 > H - m:
+        touch += int(ink[max(0, H - m - y1):].sum())
+    if x1 < m:
+        touch += int(ink[:, :m - x1].sum())
+    if x2 > W - m:
+        touch += int(ink[:, max(0, W - m - x1):].sum())
+    return touch >= 4
+
+
 def page_rotation(im: Image.Image) -> int:
     """Sayfayı düz okunur yapan döndürme (derece, PIL rotate; 0/90/180/270). Basılı metin satırlarının yerel OCR'la
     okunabilirliğinden bulunur (açı sınıflandırıcısı kapalı: ters satır düz okunmasın). Kararsızsa 0.
@@ -1192,7 +1215,9 @@ def page_rotation(im: Image.Image) -> int:
     return best if best != 0 and scores[best] >= max(60.0, 2 * s0) else 0
 
 
-_LABEL_RE = re.compile(r"(?:soru\s*(\d{1,2}))|(?:(?<![\d,.])(\d{1,2})\s*[-–.)])", re.IGNORECASE)
+# "5-)", "5)", "5.", "5-", "Soru 5". Ardından rakam gelen nokta/tire numara değildir: soru metnindeki "1.5", "2-3"
+# yanlış numara verip eşleştirmeyi kaydırabiliyordu.
+_LABEL_RE = re.compile(r"(?:soru\s*(\d{1,2}))|(?:(?<![\d,.])(\d{1,2})\s*(?:\)|[-–.](?![\d,])))", re.IGNORECASE)
 
 
 def printed_label(im: Image.Image, pen_img: np.ndarray, box, n: int) -> int | None:
@@ -1407,9 +1432,19 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
     clash = any(s is not None and q is not None and s != q for s, q in zip(strong, assign))
     pages_with = {t[0].sayfa for t, q in zip(reads, assign) if q is not None}
     pages_confirmed = {t[0].sayfa for t, q in zip(reads, assign) if q is not None and t[2] == q}
-    order_ok = (len(reads) == n and assign == list(range(1, n + 1)) and not clash and pages_with <= pages_confirmed)
+    # Puan sayısı soru sayısına eşit olsa da bu bir rastlantı olabilir: puan olmayan renkli bir işaret (öğrencinin mavi
+    # kalemle yazdığı bir rakam, tik) okunmuş ve aynı anda bir soru puansız kalmışsa ikisinin arasındaki puanlar bir
+    # soru kayar. Böyle bir işaretin izi: bakışlardan biri (çoğunlukla süzgeçsiz bakış) orada puan görmemiştir.
+    doubtful = any(q is not None and t[2] != q and any(v is None for _n, v, _c, _w in t[1]["oylar"])
+                   for t, q in zip(reads, assign))
+    order_ok = (len(reads) == n and assign == list(range(1, n + 1)) and not clash and pages_with <= pages_confirmed
+                and not doubtful)
+    # Bir puan hiçbir soruya bağlanamadı VE bir soru boş kaldı: eşleştirme basılı numaralara uyup sırayı bozmuş
+    # demektir. Basılı numara okuması da yanılabilir; numarasıyla doğrulanan hücreler de kontrole düşer.
+    shaky = None in assign and len(set(assign) - {None}) < n
     if not order_ok:
-        raw.append({"uyari": "okuma sırası doğrulanamadı", "basili_numaralar": strong, "eslesme": assign})
+        raw.append({"uyari": "okuma sırası doğrulanamadı", "basili_numaralar": strong, "eslesme": assign,
+                    "suphe": doubtful, "kayma": shaky})
 
     scores: list[float | None] = [None] * n
     confs: list[float] = [0.0] * n
@@ -1433,7 +1468,15 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
         if lab is not None and lab != q:
             add_note(i, f"Puanın yanında {lab}. sorunun numarası basılı; başka bir soruya ait olabilir")
         elif lab != q and not order_ok:
-            add_note(i, "Hangi soruya ait olduğu doğrulanamadı (soru numarası okunamadı, sıra kesin değil)")
+            add_note(i, "Hangi soruya ait olduğu doğrulanamadı (soru numarası okunamadı, sıra kesin değil)"
+                     if not doubtful else
+                     "Hangi soruya ait olduğu doğrulanamadı (kağıtta puan olmayabilecek bir renkli işaret var; "
+                     "puanlar bir soru kaymış olabilir)")
+        elif shaky:
+            add_note(i, "Bir puan hiçbir soruya bağlanamadı, bir soru da puansız kaldı; puanlar kaymış olabilir, "
+                        "kağıda bakın")
+        if _mark_at_edge(pen_pages[box.sayfa], box):
+            add_note(i, "Puan fotoğrafın kenarında kesiliyor (kağıt kırpılmış çekilmiş), kağıda bakın")
         if r["deger"] > maxes[i]:
             add_note(i, f"Okunan puan ({r['deger']:g}) bu sorunun tam puanından büyük")
     # soruya bağlanamayan puanlar: yanında okunan sorunun ve okuma sırasında komşu hücrelerin notuna yaz
