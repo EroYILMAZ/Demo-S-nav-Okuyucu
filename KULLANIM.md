@@ -27,7 +27,8 @@ Fotoğraflar yalnızca telefondan bilgisayara, ev/okul Wi-Fi'si içinden gider; 
    Sonra her kağıt şablona otomatik oturtulur ve her soru ayrı ayrı, yakından birkaç kez okunup oylanır: puanın hangi soruya ait olduğu
    karışmaz, fotoğraf eğik ya da kırpık olsa da olur. Şablon “Başka şube için kopyala” ile diğer şubelere de geçer.
    Gerçek bir 10-C kağıdının farklı açıdan çekilmiş fotoğrafında şablonsuz okuma 10 sorudan 5'ini, şablonlu okuma 10'unu doğru okudu.
-   (Şablonlu okuma daha yavaştır: kağıt başına 10–20 dakika. Kağıtları ekleyip bilgisayarı çalışır bırakın.)
+   (Bir kağıdın bütün puan kutuları birlikte okunur: bu bilgisayarda kağıt başına ~7 dakika, güçlü bir bilgisayarda
+   daha kısa. Kağıtları ekleyip bilgisayarı çalışır bırakın.)
 7. **Kağıtları ekleyin.** Üç yol var, en hızlısını seçin:
    - **Telefonla seri çekim (önerilir):** “Kağıtları çek”e basın. Kamera açık kalır. Kağıdı koyup elinizi çekin; görüntü sabitlenince
      fotoğraf **kendiliğinden çekilir** (ses gelir), arka planda gönderilir. Sıradaki kağıdı koyun. Bulanık çıkarsa kendisi yeniden çeker.
@@ -43,6 +44,8 @@ Fotoğraflar yalnızca telefondan bilgisayara, ev/okul Wi-Fi'si içinden gider; 
 8. Okuma bilgisayarda arka planda sürer. Üstte **tahmini kalan süre** yazar. Okuma motoru bir an kapanırsa kağıtlar hataya düşmez,
    motor açılınca kendiliğinden okunur.
 9. **Kontrol edin:** “Kontrol” filtresi yalnızca sarı işaretli kağıtları gösterir. Küçük resme tıklayınca fotoğraf ve puanlar yan yana açılır;
+   üstte **her sorunun puan kutusu, okunan değerle birlikte** küçük bir kart olarak durur (kontrol gerekenler sarı). Bütün kağıdı
+   aramadan on kartı bir bakışta doğrularsınız; karta tıklayınca o sorunun kutusuna geçilir.
    **Onayla** sizi kontrol bekleyen sonraki kağıda götürür. “… öğrencinin kağıdı yok” yazısına tıklayınca kimlerin eksik olduğunu görürsünüz.
    Kontrol ekranında “Kağıtta yazan toplam” yanlış okunduysa düzeltebilir ya da uyarıyı kaldırabilirsiniz.
 10. **Excel:** Bilgisayarda “Farklı kaydet” penceresi açılır; telefonda İndirilenler klasörüne kaydedilir. Henüz okunmamış
@@ -109,12 +112,17 @@ Sınav sayfasındaki **Fotoğrafta 1 · 2 · 4 kağıt** seçimi o sınav için 
 ## Hangi kağıtlar kontrole düşer?
 Yüzdelik bir “eminlik” puanı yoktur. Kağıt, ancak gerekçesi yazılı bir uyarı varsa sarı işaretlenir ve “Kontrol” listesine düşer;
 nedeni satırın altında ve hücrenin üzerine gelince yazar:
-- **Okumalar farklı:** Her puan kutusu birkaç farklı kırpımla ayrı ayrı okunur. Okumalardan biri bile farklıysa ek okumalar
-  yapılır ve hücre kontrole düşer (ör. “Okumalar farklı: 4 / 4 / 1 / 4”).
+- **Okumalar farklı:** Her puan kutusu dört farklı kırpımla okunur. Okumalardan biri bile farklıysa kutu tek tek, yakından
+  yeniden okunur ve hücre kontrole düşer (ör. “Okumalar farklı: 4 / 4 / 1 / 4”).
+- **Süzgeçsiz görüntüde başka sayı okundu:** Kutu bir kez de kurşun kalem süzgeci olmadan okunur. Tutmazsa ya kağıda kurşun
+  kalemle bir şey eklenmiştir ya da mürekkep silik/çok koyudur; değer yine renkli kalemden alınır.
 - **Puan bulunamadı**, **tam puandan büyük**, **hangi soruya ait olduğu belirsiz**, **renkli kalemde görülmedi**.
 - **Kağıttaki toplam** okunan puanların toplamıyla tutmuyor.
 - **Öğrenci:** numara okunamadı, listede yok, iki kağıtta aynı numara, numara ile isim çelişiyor ya da öğrenci listeden tahmin edildi.
-- Sayfa eksik ya da fotoğraf şablona oturtulamadı.
+- Sayfa eksik ya da fotoğraf şablona oturtulamadı; puan kutusu fotoğrafın dışında kalıyor (kağıt kırpılmış çekilmiş).
+- Şablonsuz okumada puanın hangi soruya ait olduğu basılı soru numarasıyla doğrulanamadı, ya da kağıtta sorusu
+  belirlenemeyen fazladan bir puan var. Puanlar bütün sayfadan okunduysa (renkli puan bulunamadı) her hücre işaretlenir.
+- Soru sayısı ya da tam puanlar sonradan değişirse onaylanmış kağıtların onayı kalkar (yeni soru da kontrol edilsin).
 
 Bir hücreyi elle düzeltirseniz o hücrenin uyarısı kalkar. **Onayla** ile kağıt kontrol listesinden çıkar.
 
@@ -129,12 +137,23 @@ Sınıf listesi varsa, numara ve isim listeyle karşılaştırılır:
   yalnızca başlıkları listeyle karşılaştırılarak düzeltilir.
 
 ## Nasıl okuyor?
-1. Ad, numara ve toplam yalnızca sayfanın üst kısmından, yakın planda okunur.
-2. İki sütunlu sayfalar otomatik algılanır ve her sütun ayrı, yakın planda okunur.
-3. İki okuma birbirini tutmazsa ya da toplam tutmuyorsa hücre sarı işaretlenir.
-Gerçek bir 10-C matematik kağıdında (2 sayfa, iki sütun, çok karalama) eski sürüm 10 sorudan 7'sini doğru okuyordu; yeni sürüm 10'unu da doğru okudu.
+1. Kurşun kalem, basılı yazı ve siyah izler silinir; yalnızca renkli tükenmez kalem kalır (bkz. “Kurşun kalem neden okunmuyor?”).
+2. Puanların yeri şablondan alınır; şablon yoksa renkli mürekkepten kendiliğinden bulunur (öğretmenin yuvarlak içindeki puanları).
+3. Bir kağıdın bütün puan kutuları harfli tek bir görüntüye dizilip birlikte okunur; bu dört kez, her seferinde farklı kırpım
+   ve farklı yerleşimle yapılır, bir kez de süzgeçsiz görüntüyle. Tutmayan kutu tek tek, yakından yeniden okunur ve işaretlenir.
+4. Şablonsuz okumada her puanın yanındaki basılı soru numarası ("5-)") bilgisayardaki metin tanımayla aranır ve okuma
+   sırasıyla (sütun, satır, soldan sağa) birleştirilir. Bulunan numaralar sırayı doğrulamazsa ya da çelişirse, numarasıyla
+   doğrulanmamış her hücre işaretlenir: kaymış bir eşleştirme sessiz kalmaz. Ters ya da yan çekilmiş sayfa önce düzeltilir.
+5. Ad ve numara sayfanın üst kısmından okunur; sınıf listesi varsa onunla eşleştirilir.
+
+Gerçek bir 10-C matematik kağıdında (2 sayfa, iki sütun, çok karalama, kağıdın üstünde el) ilk sürüm şablonsuz 10 sorudan 5'ini
+buluyordu; şimdiki sürüm şablonla da şablonsuz da 10'unu doğru okuyor.
+**İkinci model (isteğe bağlı):** ⚙ Ayarlar → “Çapraz kontrol modeli”. Varsayılan kapalı; denenen minicpm-v:8b Türkçe el yazısında
+ana modelden zayıf çıktı ve doğru okunan puanların bir kısmını gereksiz yere kontrole düşürdü.
 
 ## Teknik notlar
+- Sınav dosyaları diske kalıcı yazılır ve bir önceki sağlam sürüm yedeklenir (`sinav.json.bak`): bilgisayar aniden kapanırsa
+  sınav kaybolmaz.
 - Veriler (sınavlar, fotoğraflar) OneDrive'a eşitlenmesin diye `%LOCALAPPDATA%\SinavOkuyucu\data` altında tutulur.
 - Program `%LOCALAPPDATA%\Programs\SinavOkuyucu` altına kuruludur.
 - Bu bilgisayarın NVIDIA sürücüsü (560.94) Ollama'nın CUDA sürümüyle uyumsuz. Ekran kartı Vulkan üzerinden kullanılıyor (program bunu kendisi ayarlar).

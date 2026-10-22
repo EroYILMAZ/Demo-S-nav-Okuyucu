@@ -264,6 +264,62 @@ k6c = c.get(f"/api/sinavlar/{ex6['id']}").json()["kayitlar"][0]
 ok(not k6c["kutu_resimleri"] and not any((main.store.image_dir(ex6["id"]) / n).exists() for n in k6b["kutu_resimleri"].values()),
    "fotoğrafları sil, kutu resimlerini de siliyor (KVKK)")
 
+print("Tarama bulgularının düzeltmeleri")
+import numpy as _np  # noqa: E402
+ex7 = c.post("/api/sinavlar", json={"sinif": "T", "tam_puanlar": [10, 10], "sayfa_sayisi": 2}).json()
+# 16 bitlik gri tarama beyaz sayfaya dönüşmesin
+arr16 = _np.full((400, 300), 0xE000, _np.uint16)
+arr16[100:200, 50:250] = 0x2000
+b16 = io.BytesIO()
+Image.fromarray(arr16).save(b16, "PNG")
+r = c.post(f"/api/sinavlar/{ex7['id']}/kagit", files=[("dosyalar", ("g16.png", b16.getvalue(), "image/png"))],
+           data={"gruplama": "ayri"}).json()
+k7 = c.get(f"/api/sinavlar/{ex7['id']}").json()["kayitlar"][0]
+saved = _np.asarray(Image.open(main.store.image_dir(ex7["id"]) / k7["resimler"][0]).convert("L"))
+ok(saved[150, 150] < 80 and saved[10, 10] > 180, f"16 bitlik gri tarama doğru dönüştürüldü ({saved[150, 150]}, {saved[10, 10]})")
+# "her 2 sayfa bir öğrenci": aradan dosya düşerse hiçbir sayfa eklenmesin (öğrenciler karışmasın)
+before = len(c.get(f"/api/sinavlar/{ex7['id']}").json()["kayitlar"])
+files = [("dosyalar", ("a.jpg", jpg("a1"), "image/jpeg")), ("dosyalar", ("bozuk.jpg", b"bozuk", "image/jpeg")),
+         ("dosyalar", ("b.jpg", jpg("b1"), "image/jpeg")), ("dosyalar", ("c.jpg", jpg("b2"), "image/jpeg"))]
+r = c.post(f"/api/sinavlar/{ex7['id']}/kagit", files=files, data={"gruplama": "sayfa"})
+ok(r.status_code == 400 and len(c.get(f"/api/sinavlar/{ex7['id']}").json()["kayitlar"]) == before,
+   "sıralı gruplamada bozuk dosya varken hiçbir sayfa eklenmedi")
+# yeniden okunmayı bekleyen kağıt düzenlenemez; eski okumanın hatası yeni sıraya yazılmaz
+def to_wait(e):
+    e["kayitlar"][0].update(durum="bekliyor")
+main.store.update_exam(ex7["id"], to_wait)
+ok(c.patch(f"/api/sinavlar/{ex7['id']}/kagit/{k7['id']}", json={"puan": {"soru": 0, "deger": 5}}).status_code == 409,
+   "okunmayı bekleyen kağıtta düzeltme reddedildi")
+main._set_error(ex7["id"], k7["id"], "eski hata")
+ok(c.get(f"/api/sinavlar/{ex7['id']}").json()["kayitlar"][0]["durum"] == "bekliyor", "eski okumanın hatası yeni sırayı ezmedi")
+# toplu onay: uyarılı kağıt onaylanmasın
+def to_done(e):
+    e["kayitlar"][0].update(durum="tamam", puanlar=[None, 5], ogrenci_no="", ad_soyad="")
+main.store.update_exam(ex7["id"], to_done)
+ok(c.patch(f"/api/sinavlar/{ex7['id']}/kagit/{k7['id']}", json={"onaylandi": True, "yalniz_uyarisiz": True}).status_code == 409,
+   "uyarılı kağıt toplu onayda onaylanmadı")
+# soru sayısı değişince onay kalkar
+c.patch(f"/api/sinavlar/{ex7['id']}/kagit/{k7['id']}", json={"onaylandi": True})
+c.put(f"/api/sinavlar/{ex7['id']}", json={"sinif": "T", "tam_puanlar": [10, 10, 10], "sayfa_sayisi": 2})
+ok(c.get(f"/api/sinavlar/{ex7['id']}").json()["kayitlar"][0]["onaylandi"] is False, "soru eklenince onay kalktı (yeni soru kontrol edilsin)")
+# bozulan sinav.json yedekten okunur
+f7 = main.config.EXAMS_DIR / ex7["id"] / "sinav.json"
+f7.write_text("", encoding="utf-8")
+ok(c.get(f"/api/sinavlar/{ex7['id']}").status_code == 200, "boş kalan sinav.json yedekten okundu")
+# çapraz kontrol modeli okuma modeliyle aynı olamaz
+cur_model = c.get("/api/durum").json()["ayarlar"]["model"]
+ok(c.put("/api/ayarlar", json={"ikinci_model": cur_model}).status_code == 400, "çapraz kontrol modeli okuma modeliyle aynı olamaz")
+# çok sayfalı PDF'in bir kaydı silinince yeniden yükleme ötekileri çoğaltmasın
+ex8 = c.post("/api/sinavlar", json={"sinif": "P", "tam_puanlar": [10]}).json()
+pdf3 = pdf(3)  # aynı dosya: PDF her oluşturuluşta farklı baytlar (zaman damgası) içerebilir
+c.post(f"/api/sinavlar/{ex8['id']}/kagit", files=[("dosyalar", ("d.pdf", pdf3, "application/pdf"))], data={"gruplama": "ayri"})
+k8 = c.get(f"/api/sinavlar/{ex8['id']}").json()["kayitlar"]
+first = min(k8, key=lambda k: k["eklenme"])
+c.delete(f"/api/sinavlar/{ex8['id']}/kagit/{first['id']}")
+r = c.post(f"/api/sinavlar/{ex8['id']}/kagit", files=[("dosyalar", ("d.pdf", pdf3, "application/pdf"))], data={"gruplama": "ayri"}).json()
+ok(r["atlanan"] == 1 and len(c.get(f"/api/sinavlar/{ex8['id']}").json()["kayitlar"]) == 2,
+   "PDF'in bir kaydı silinince yeniden yükleme ötekileri çoğaltmadı")
+
 print("Kurşun kalem süzgeci")
 import numpy as np  # noqa: E402
 from app import kalem  # noqa: E402

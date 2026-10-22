@@ -381,8 +381,8 @@ document.getElementById("settings-btn").onclick = async () => {
             .map((m) => `<option value="${esc(m)}" ${m === (d.ayarlar.ikinci_model || "kapali") ? "selected" : ""}>${m === "kapali" ? "Kapalı" : esc(m) + ((d.ollama.modeller || []).includes(m) ? "" : " (yüklü değil)")}</option>`).join("")}</select>
         </label>
         <p class="hint">Okunan puanlar, farklı eğitilmiş ikinci bir modelle bir kez daha okunur; tutmazsa hücre kontrole düşer.
-        Kağıt başına tek okuma ekler ama ikinci model ~5,5 GB yer ve 16 GB bellek ister; yüklü değilse bu kontrol atlanır
-        (önerilen: minicpm-v:8b).</p>
+        Varsayılan kapalı: denenen modeller Türkçe el yazısında ana modelden zayıf çıktı ve doğru okunan puanları gereksiz
+        yere kontrole düşürdü. Açarsanız kağıt başına bir okuma ekler; model ~5,5 GB yer ve 16 GB bellek ister.</p>
         <div class="form-grid" style="margin-top:12px">
           <label class="f">Çözünürlük (piksel)<input name="max_kenar" type="number" min="512" max="3000" value="${d.ayarlar.max_kenar}"></label>
           <label class="f">Zaman aşımı (sn)<input name="zaman_asimi" type="number" min="30" max="3600" value="${d.ayarlar.zaman_asimi}"></label>
@@ -405,6 +405,9 @@ document.getElementById("settings-btn").onclick = async () => {
   document.getElementById("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = e.target;
+    if (f.ikinci_model.value !== "kapali" && f.ikinci_model.value === f.model.value) {
+      return toast("Çapraz kontrol modeli okuma modelinden farklı olmalı (aynıysa kontrol yapılmaz)", { err: true });
+    }
     try {
       const num = (v) => (String(v).trim() === "" ? null : +v);  // boş bırakılan alan değiştirilmesin
       await api("/api/ayarlar", json("PUT", { model: f.model.value, max_kenar: num(f.max_kenar.value), zaman_asimi: num(f.zaman_asimi.value),
@@ -491,11 +494,12 @@ async function showExam(id) {
   document.getElementById("sheets-seg").addEventListener("click", async (e) => {
     const b = e.target.closest("[data-sheets]");
     if (!b || +b.dataset.sheets === sheetsPer()) return;
+    state.mutSeq = (state.mutSeq || 0) + 1;  // bu sırada gelen eski bir yoklama yanıtı seçimi geri almasın
+    state.mutating = (state.mutating || 0) + 1;
     try {
-      state.exam = await api(`/api/sinavlar/${state.exam.id}/fotodaki-kagit`, json("PUT", { deger: +b.dataset.sheets }));
-      document.querySelectorAll("#sheets-seg button").forEach((x) => x.classList.toggle("on", +x.dataset.sheets === sheetsPer()));
-      renderSheetsHint();
-    } catch (err) { toastErr(err); }
+      applyFresh(await api(`/api/sinavlar/${state.exam.id}/fotodaki-kagit`, json("PUT", { deger: +b.dataset.sheets })));
+      syncSheetsPick();
+    } catch (err) { toastErr(err); } finally { state.mutating--; }
   });
   renderSheetsHint();
 
@@ -512,6 +516,11 @@ async function showExam(id) {
   ensureRosterDatalist();
   renderSheet(true);
   poll();
+}
+
+function syncSheetsPick() {
+  document.querySelectorAll("#sheets-seg button").forEach((x) => x.classList.toggle("on", +x.dataset.sheets === sheetsPer()));
+  renderSheetsHint();
 }
 
 function renderSheetsHint() {
@@ -711,11 +720,26 @@ function applyFresh(fresh) {
   if (state.reviewId) {
     const r = fresh.kayitlar.find((x) => x.id === state.reviewId);
     if (r) syncRecord(r);
+    refreshReview();
   }
+  if (old.fotodaki_kagit !== fresh.fotodaki_kagit || old.sayfa_sayisi !== fresh.sayfa_sayisi) syncSheetsPick();
 }
 
-/** Bir kaydı gösteren tüm öğeleri (tablo satırı, kontrol ekranı) güncelle. */
-function syncRecord(r) {
+/** Kontrol ekranının yeniden kurulmasını gerektiren değişiklikler: durum, sayfalar, kutu resimleri. */
+const reviewKey = (r) => [r.durum, (r.resimler || []).join(), Object.values(r.kutu_resimleri || {}).join()].join("|");
+
+/** Kontrol ekranı açıksa ve gösterdiği kağıt yeniden okunmaya başladıysa / okuması bittiyse ekranı yeniden kur:
+ * eski puanlarla düzenlenebilir bir form kalmasın, kutu kartları eskimesin. */
+function refreshReview() {
+  if (!state.reviewId || $modal.hidden) return;
+  const r = state.exam.kayitlar.find((x) => x.id === state.reviewId);
+  if (!r) { closeModal(); return; }
+  if (reviewKey(r) !== state.reviewKey) openReview(r.id);
+}
+
+/** Bir kaydı gösteren tüm öğeleri (tablo satırı, kontrol ekranı) güncelle. force: odaktaki kutunun değeri de
+ * sunucudakine döndürülür (kaydedilemeyen bir düzeltme ekranda kayıtlıymış gibi kalmasın). */
+function syncRecord(r, force = false) {
   document.querySelectorAll(`[data-rec="${r.id}"]`).forEach((el) => {
     const html = el.dataset.kind === "form" ? formHtml(r) : rowHtml(r);
     if (!el.contains(document.activeElement)) { el.outerHTML = html; return; }
@@ -730,7 +754,7 @@ function syncRecord(r) {
       if (!src) return;
       inp.className = src.className;
       inp.title = src.title;
-      if (inp !== document.activeElement) inp.value = src.value;
+      if (force || inp !== document.activeElement) inp.value = src.value;
     });
     el.querySelectorAll("[data-sync]").forEach((part) => {
       const src = fresh.querySelector(`[data-sync="${part.dataset.sync}"]`);
@@ -745,6 +769,8 @@ function ensureRosterDatalist() {
   dl.innerHTML = state.exam.ogrenci_listesi.map((s) => `<option value="${esc(s.ad)}">${esc(s.no)}</option>`).join("");
 }
 
+/** Kaydı düzelt. Dönüş: kaydedildiyse true. Kaydedilemezse ekran sunucudaki değere döner (yoksa öğretmen düzeltmenin
+ * kaydedildiğini sanar, ardından "Onayla" eski değeri onaylardı). */
 async function patchRecord(id, body) {
   state.mutSeq = (state.mutSeq || 0) + 1;
   state.mutating = (state.mutating || 0) + 1;
@@ -756,17 +782,25 @@ async function patchRecord(id, body) {
     const before = Object.fromEntries(old.kayitlar.map((r) => [r.id, JSON.stringify(r)]));
     // aynı numara başka satırlarda da uyarıyı değiştirebilir: değişen her kaydı güncelle
     for (const r of fresh.kayitlar) if (before[r.id] !== JSON.stringify(r)) syncRecord(r);
-  } catch (err) { toastErr(err); }
-  finally { state.mutating--; }
+    refreshReview();
+    return true;
+  } catch (err) {
+    toastErr(err.pairing ? err : new Error(`Kaydedilemedi: ${err.message}. Değer eski hâline döndürüldü; yeniden deneyin.`));
+    const r = state.exam?.kayitlar.find((x) => x.id === id);
+    if (r) syncRecord(r, true);
+    return false;
+  } finally { state.mutating--; }
 }
 
 async function reload() {
   state.exam = await api(`/api/sinavlar/${state.exam.id}`);
   ensureRosterDatalist();
   renderSheet(true);
+  syncSheetsPick();
   if (state.reviewId) {
     const r = state.exam.kayitlar.find((x) => x.id === state.reviewId);
     if (r) syncRecord(r); else closeModal();
+    refreshReview();
   }
   poll();
 }
@@ -833,9 +867,10 @@ document.addEventListener("click", async (e) => {
   if (!id) return;
   const act = btn.dataset.act;
   if (act === "confirm") {
-    await patchRecord(id, { onaylandi: true });
+    const inReview = !!btn.closest(".vform");  // patchRecord ekranı yenileyince buton DOM'dan ayrılabiliyor: önce oku
+    const ok = await patchRecord(id, { onaylandi: true });
     // kontrol ekranında onaylayınca kontrol bekleyen bir sonraki kağıda geç
-    if (state.reviewId === id && btn.closest(".vform")) nextToCheck(id);
+    if (ok && inReview && state.reviewId === id) nextToCheck(id);
     return;
   }
   if (act === "unconfirm") return patchRecord(id, { onaylandi: false });
@@ -892,6 +927,7 @@ function openReview(id) {
   const r = state.exam.kayitlar.find((x) => x.id === id);
   if (!r) return;
   state.reviewId = id;
+  state.reviewKey = reviewKey(r);
   const name = r.ad_soyad || "Kağıt";
   const pics = r.resimler.map((n) => `<img src="/api/sinavlar/${state.exam.id}/resim/${n}" alt="Sayfa">`).join("");
   // her sorunun puan kutusu, okunan değerle yan yana: öğretmen bütün kağıdı aramadan bir bakışta doğrular
@@ -1303,11 +1339,16 @@ function moreDialog() {
   document.getElementById("m-confirm").onclick = async () => {
     closeModal();
     let done = 0, errors = 0;
+    let changed = 0;
     for (const r of clean) {
-      try { await api(`/api/sinavlar/${state.exam.id}/kagit/${r.id}`, json("PATCH", { onaylandi: true })); done++; }
-      catch { errors++; }
+      // pencere açıldıktan sonra uyarı kazanmış bir kağıt (ör. aynı numara başka kağıtta da okundu) onaylanmasın
+      try { await api(`/api/sinavlar/${state.exam.id}/kagit/${r.id}`, json("PATCH", { onaylandi: true, yalniz_uyarisiz: true })); done++; }
+      catch (err) { if (/uyarı/.test(err.message)) changed++; else errors++; }
     }
-    toast(errors ? `${done} kağıt onaylandı, ${errors} kağıt onaylanamadı` : `${done} kağıt onaylandı`, { err: !!errors });
+    const parts = [`${done} kağıt onaylandı`];
+    if (changed) parts.push(`${changed} kağıt bu arada uyarı aldığı için onaylanmadı`);
+    if (errors) parts.push(`${errors} kağıt onaylanamadı`);
+    toast(parts.join(", "), { err: !!(errors || changed) });
     reload();
   };
   document.getElementById("m-imgs").onclick = async () => {

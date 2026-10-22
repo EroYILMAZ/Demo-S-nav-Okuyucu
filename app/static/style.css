@@ -209,7 +209,8 @@ code { font: 12px ui-monospace, Consolas, monospace; background: var(--surface-2
 }
 .cell input:hover { border-color: var(--line-strong); background: var(--input); }
 .scores .cell input { text-align: center; }
-.cell input.w { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); }
+/* .scores/.vform kuralları daha sonra geldiği için vurguyu eziyordu (telefonda ve kontrol ekranında sarı görünmüyordu) */
+.cell input.w, .scores .cell input.w, .vform .cell input.w { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); }
 .cell .ql { display: none; }
 .c-total { text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 .c-total small { display: block; font-weight: 400; font-size: 10px; color: var(--faint); line-height: 1; }

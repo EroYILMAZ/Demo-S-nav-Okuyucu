@@ -150,6 +150,12 @@ def resolve_student(no: str, name: str, roster: list[dict], p_no: float = 0.9, c
             if chosen and chosen["no"] != by_no["no"] and ch_conf >= 0.8:
                 return by_no["no"], by_no["ad"], (
                     f"Numara ve isim {by_no['ad']} diyor ama listeyle karşılaştırma {chosen['ad']} gösteriyor."), "", min(conf, 0.6)
+            if best["no"] != by_no["no"] and best_sim >= 0.85 and best_sim - sim >= 0.05:
+                # isim numaradaki öğrenciye de benziyor ama listedeki başka bir öğrenciyle açıkça daha iyi uyuşuyor
+                # (Mehmet Kara / Mehmet Kaya): numaraya göre uyarısız seçmek puanı yanlış öğrenciye yazabilirdi
+                return by_no["no"], by_no["ad"], (
+                    f"Numara {no} ({by_no['ad']}) ama yazılan isim “{name}” listedeki {best['no']} {best['ad']} ile "
+                    "daha çok uyuşuyor."), "", min(conf, 0.5)
             return by_no["no"], by_no["ad"], "", "", conf
         if chosen and chosen["no"] == by_no["no"]:
             conf = 1 - (1 - p_no) * (1 - ch_conf)
@@ -161,14 +167,18 @@ def resolve_student(no: str, name: str, roster: list[dict], p_no: float = 0.9, c
         if best_sim >= 0.8 and best["no"] != by_no["no"]:
             return best["no"], best["ad"], (
                 f"Numara {no} ({by_no['ad']}) ile isim “{name}” farklı öğrencileri gösteriyor; isme göre seçildi."), "", 0.5
-        return by_no["no"], by_no["ad"], "", f"İsim “{name}” diye okundu, numaraya göre eşleştirildi.", p_no * 0.9
+        # isim numaradaki öğrenciyi doğrulamıyor: her zaman kontrol eşiğinin altında kalsın
+        return by_no["no"], by_no["ad"], "", f"İsim “{name}” diye okundu, numaraya göre eşleştirildi.", min(p_no * 0.9, 0.89)
 
     reason = "okunamadı" if not no else f"{no} listede yok"
     if chosen:
         sim = name_similarity(name, chosen["ad"])
         conf = ch_conf * (0.85 + 0.15 * min(1.0, sim / 0.7))
-        if _one_digit_apart(no, chosen["no"]):
-            conf = 1 - (1 - conf) * 0.5  # okunan numara seçilen öğrencinin numarasına çok yakın: ek kanıt
+        near = [s for s in roster if _one_digit_apart(no, s["no"])]
+        if len(near) == 1 and near[0]["no"] == chosen["no"]:
+            conf = 1 - (1 - conf) * 0.5  # okunan numaraya bir rakam yakın TEK öğrenci seçilen: ek kanıt
+        if sim < 0.7:
+            conf = min(conf, 0.89)  # numara listede yok ve isim seçilen öğrenciyi doğrulamıyor: öğretmen baksın
         # ikinci aday: okunan el yazısı isme en çok benzeyen (seçilen dışındaki) öğrenci; isim yoksa modelin rakam olasılığı
         others = sorted((s for s in roster if s["no"] != chosen["no"]), key=lambda s: -name_similarity(name, s["ad"]))
         other = others[0] if others and name and name_similarity(name, others[0]["ad"]) >= 0.5 else \
@@ -231,6 +241,7 @@ def record_warnings(rec: dict, exam: dict, duplicates: set[str]) -> tuple[list[s
         cells["ad"] = "İsim okunamadı"
     if rec.get("eslesme_notu"):
         row.append(rec["eslesme_notu"])
+    row.extend(rec.get("okuma_uyarilari") or [])  # okumanın kendi uyarıları (bütün sayfa okundu, sayfa döndürüldü…)
     if rec.get("hizalanamayan"):
         sayfalar = ", ".join(map(str, rec["hizalanamayan"]))
         row.append(f"{sayfalar}. fotoğraf şablona oturtulamadı (başka baskı/grup ya da bulanık fotoğraf olabilir).")

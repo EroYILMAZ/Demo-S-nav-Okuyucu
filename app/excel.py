@@ -25,7 +25,8 @@ def build_workbook(exam: dict) -> bytes:
     records = [r for r in exam["kayitlar"] if r.get("durum") == "tamam"]
     # okunamamış / sırada bekleyen kağıtlar da durumlarıyla yer alsın (öğrenci "kağıdı yok" sanılmasın)
     pending = [r for r in exam["kayitlar"] if r.get("durum") != "tamam"]
-    read_nos = {r.get("ogrenci_no") for r in records}
+    # yeniden okunan ya da okunamayan kağıdın öğrencisi "kağıdı okutulmadı" görünmesin (kağıdı var, puanı bekliyor)
+    read_nos = {r.get("ogrenci_no") for r in exam["kayitlar"] if r.get("ogrenci_no")}
     for s in exam.get("ogrenci_listesi", []):
         if s["no"] not in read_nos:
             records.append({"ogrenci_no": s["no"], "ad_soyad": s["ad"], "puanlar": [], "eksik": True})
@@ -33,7 +34,8 @@ def build_workbook(exam: dict) -> bytes:
     for r in pending:
         state = {"hata": f"Okunamadı: {r.get('hata') or ''}".strip(), "eksik": "Diğer sayfası bekleniyor"}.get(
             r.get("durum"), "Henüz okunmadı (sırada)")
-        records.append({"ogrenci_no": "", "ad_soyad": "", "puanlar": [], "eksik": True, "not": state})
+        records.append({"ogrenci_no": r.get("ogrenci_no") or "", "ad_soyad": r.get("ad_soyad") or "", "puanlar": [],
+                        "eksik": True, "not": state})
 
     wb = Workbook()
     ws = wb.active

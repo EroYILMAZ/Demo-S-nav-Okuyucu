@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from . import config, store
 from .bolme import split_sheets
 from .excel import build_workbook
-from .matching import annotate as _annotate_raw, parse_roster_file, parse_roster_text, resolve_student
+from .matching import annotate as _annotate_raw, parse_roster_file, parse_roster_text, record_warnings, resolve_student
 from .recognizer import EngineError, RecognitionError, identify, ollama_status, recognize_auto, recognize_templated
 
 STATIC = Path(__file__).parent / "static"
@@ -70,9 +70,7 @@ def _devices() -> dict:
 
 def _save_devices(d: dict) -> None:
     DEVICES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = DEVICES_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(DEVICES_FILE)
+    store.write_durable(DEVICES_FILE, json.dumps(d, ensure_ascii=False, indent=1))
 
 
 def _trusted(request: Request) -> bool:
@@ -158,9 +156,11 @@ def _worker() -> None:
 
 
 def _set_error(exam_id: str, rec_id: str, msg: str) -> None:
+    """Okunan kaydı hataya düşür. Okunurken sayfa eklendi/geri alındıysa kayıt 'bekliyor'a dönmüştür: o zaman eski
+    okumanın hatası yazılmaz, yeni kuyruk girdisi kaydı baştan okur."""
     def fn(exam):
         rec = store.find_record(exam, rec_id)
-        if rec.get("durum") in ("bekliyor", "isleniyor"):
+        if rec.get("durum") == "isleniyor":
             rec["durum"] = "hata"
             rec["hata"] = msg
             rec["ilerleme"] = ""
@@ -288,7 +288,9 @@ def _process(exam_id: str, rec_id: str) -> None:
             eminlik_puan=(list(conf["puan"]) + [0.0] * n)[:n],
             eminlik_alt={k: v for k, v in conf["alternatif"].items() if int(k) < n},
             eminlik_kimlik=round(kimlik, 4),
+            kimlik_elle=False,  # yeniden okundu: öğretmenin eski kimlik düzeltmesi geçersiz
             hizalanamayan=result.get("hizalanamayan") or [],
+            okuma_uyarilari=list(result.get("uyarilar") or []),
             ilerleme="",
             motor_deneme=0,
             sure=round(time.time() - started, 1),
@@ -300,7 +302,7 @@ def _process(exam_id: str, rec_id: str) -> None:
     except (KeyError, _Skip):
         old_boxes[:] = list(box_images.values())  # kaydedilmedi: yeni kutu resimleri artık
     for name in old_boxes:
-        (store.image_dir(exam_id) / name).unlink(missing_ok=True)
+        store.unlink(store.image_dir(exam_id) / name)
 
 
 def _identify(exam_id: str, rec_id: str) -> None:
@@ -326,7 +328,7 @@ def _identify(exam_id: str, rec_id: str) -> None:
 
     def fn(e):
         r = store.find_record(e, rec_id)
-        if r.get("durum") != "tamam" or r.get("eminlik_kimlik") == 1.0 or r.get("onaylandi"):
+        if r.get("durum") != "tamam" or _identity_by_teacher(r) or r.get("onaylandi"):
             return  # bu arada öğretmen düzeltti ya da kağıt yeniden okunuyor
         o["liste_secimi"] = choice
         r["okunan"] = o
@@ -382,6 +384,7 @@ def _discovery_responder() -> None:
 @app.on_event("startup")
 def _startup() -> None:
     config.EXAMS_DIR.mkdir(parents=True, exist_ok=True)
+    store.cleanup_orphans()  # silinirken dosyası açık kalmış sınav klasörleri (öğrenci fotoğrafı diskte unutulmasın)
     threading.Thread(target=_worker, daemon=True).start()
     threading.Thread(target=_discovery_responder, daemon=True).start()
     _requeue_pending()
@@ -438,6 +441,21 @@ class _BadFile(Exception):
     pass
 
 
+class _Shift(Exception):
+    """Sıralı sayfa gruplamasını kaydıracak bir durum (yükleme geri alınır)."""
+
+
+def to_rgb8(im: Image.Image) -> Image.Image:
+    """8 bit RGB. 16 bitlik ya da kayan noktalı gri görüntülerde Pillow'un convert('RGB')'si değerleri 255'te keser:
+    tarayıcıdan gelen 16 bitlik gri bir PNG/TIFF bembeyaz bir sayfaya dönüşürdü. Önce 8 bite ölçeklenir."""
+    if im.mode.startswith("I;16") or im.mode in ("I", "F"):
+        import numpy as np
+        x = np.asarray(im, dtype=np.float64)
+        top = 65535.0 if im.mode.startswith("I;16") or x.max() > 255 else 255.0
+        im = Image.fromarray(np.clip(x * (255.0 / top) + 0.5, 0, 255).astype(np.uint8))
+    return im.convert("RGB")
+
+
 def _save_page(exam_id: str, im: Image.Image) -> str:
     im.thumbnail((2400, 2400), Image.LANCZOS)
     name = store.new_id() + ".jpg"
@@ -471,14 +489,14 @@ def _save_pages(exam_id: str, data: bytes, filename: str, sheets: int = 1, notes
             raise
         except Exception:
             for n in names:
-                (store.image_dir(exam_id) / n).unlink(missing_ok=True)
+                store.unlink(store.image_dir(exam_id) / n)
             raise _BadFile(f"“{filename}” sayfaları okunamadı")
         finally:
             pdf.close()
         return names
     try:
         with Image.open(io.BytesIO(data)) as im:
-            photo = ImageOps.exif_transpose(im).convert("RGB")
+            photo = to_rgb8(ImageOps.exif_transpose(im))
     except Exception:
         raise _BadFile(f"“{filename}” bir resim ya da PDF değil (HEIC ise telefonda JPEG olarak kaydedin)")
     if sheets <= 1:
@@ -490,9 +508,13 @@ def _save_pages(exam_id: str, data: bytes, filename: str, sheets: int = 1, notes
 
 
 def _forget_images(e: dict, names: list[str]) -> None:
-    """Silinen fotoğrafların 'aynı dosya' kayıtlarını unut (yeniden yüklenebilsinler)."""
-    gone = set(names)
-    e["ozetler"] = {h: n for h, n in (e.get("ozetler") or {}).items() if n not in gone}
+    """Bütün sayfaları silinmiş dosyaların 'aynı dosya' kaydını unut (yeniden yüklenebilsinler). Çok sayfalı bir PDF'in
+    ya da çoklu kağıtlı bir fotoğrafın yalnızca bir kaydı silindiyse dosya unutulmaz: yeniden yüklemek öteki bütün
+    sayfaları çoğaltırdı."""
+    alive = {n for r in e["kayitlar"] for n in (r.get("resimler") or [])}
+    alive -= set(names)
+    as_list = lambda v: v if isinstance(v, list) else [v]  # noqa: E731  (eski kayıtlarda yalnızca ilk sayfa)
+    e["ozetler"] = {h: v for h, v in (e.get("ozetler") or {}).items() if any(n in alive for n in as_list(v))}
 
 
 def _close_open_sessions(e: dict, queued: list[str]) -> None:
@@ -578,6 +600,11 @@ class SettingsIn(BaseModel):
 
 @app.put("/api/ayarlar")
 def ayarlar(body: SettingsIn):
+    cur = config.load_settings()
+    model = body.model or cur.get("model")
+    second = body.ikinci_model or cur.get("ikinci_model")
+    if second and second != "kapali" and second == model:
+        raise HTTPException(400, "Çapraz kontrol modeli okuma modelinden farklı olmalı")
     return config.save_settings(body.model_dump())
 
 
@@ -647,15 +674,27 @@ def sinav_guncelle(exam_id: str, body: ExamIn):
     _check_maxes(body)
     _exam_or_404(exam_id)
     queued: list[str] = []
+    recheck: list[str] = []
 
     def fn(e):
         old_n = len(e["tam_puanlar"])
+        old_maxes = list(e["tam_puanlar"])
         old_pages = int(e.get("sayfa_sayisi", 1))
         e.update(ad=body.ad.strip(), sinif=body.sinif.strip(), ders=body.ders.strip(), tam_puanlar=body.tam_puanlar,
                  sayfa_sayisi=body.sayfa_sayisi)
         if not e["ogrenci_listesi"]:
             e["ogrenci_listesi"] = store.get_class_roster(e["sinif"])
+            if e["ogrenci_listesi"]:
+                _rematch_roster(e, recheck)  # liste kendiliğinden geldi: okunmuş kağıtları da ona göre eşleştir
         n = len(body.tam_puanlar)
+        if n != old_n or list(body.tam_puanlar) != old_maxes:
+            # onay eski soru sayısı / tam puanlar için verilmişti: yeni boş soru ya da artık tam puanı aşan bir puan
+            # "onaylandı" diye uyarısız dışa aktarılmasın
+            for r in e["kayitlar"]:
+                p = r.get("puanlar") or []
+                if r.get("onaylandi") and (n != old_n or any(
+                        i < len(p) and p[i] is not None and p[i] > body.tam_puanlar[i] for i in range(n))):
+                    r["onaylandi"] = False
         if n != old_n:
             for r in e["kayitlar"]:
                 r["puanlar"] = (list(r.get("puanlar") or []) + [None] * n)[:n]
@@ -672,14 +711,41 @@ def sinav_guncelle(exam_id: str, body: ExamIn):
     exam = store.update_exam(exam_id, fn)
     for rid in queued:
         _jobs.put((exam_id, rid))
+    for rid in recheck:
+        _jobs.put((exam_id, rid, "kimlik"))
     return annotate(exam)
 
 
 @app.delete("/api/sinavlar/{exam_id}")
 def sinav_sil(exam_id: str):
     _exam_or_404(exam_id)
-    store.delete_exam(exam_id)
+    try:
+        store.delete_exam(exam_id)
+    except OSError:
+        raise HTTPException(500, "Bazı fotoğraflar şu an kullanımda olduğu için silinemedi. Biraz sonra yeniden deneyin "
+                                 "(program yeniden açılınca kalanlar da silinir).")
     return {"ok": True}
+
+
+def _identity_by_teacher(r: dict) -> bool:
+    """Öğrenciyi öğretmen mi girdi? (Eski kayıtlarda bu, eminlik_kimlik == 1.0 ile işaretleniyordu.)"""
+    return bool(r["kimlik_elle"]) if "kimlik_elle" in r else r.get("eminlik_kimlik") == 1.0
+
+
+def _rematch_roster(e: dict, recheck: list[str]) -> None:
+    """Onaylanmamış ve öğretmenin elle düzeltmediği okunmuş kağıtları sınavın (yeni) listesine göre yeniden eşleştir.
+    Hâlâ belirsiz olanların başlığı (yalnızca başlığı) listeyle karşılaştırılmak üzere recheck'e eklenir."""
+    roster = e["ogrenci_listesi"]
+    for r in e["kayitlar"]:
+        if r.get("durum") != "tamam" or r.get("onaylandi") or not r.get("okunan") or _identity_by_teacher(r):
+            continue
+        o = r["okunan"]
+        p_no = (o.get("eminlik") or {}).get("no", 0.9)
+        r["ogrenci_no"], r["ad_soyad"], r["eslesme_notu"], r["eslesme_bilgi"], k = resolve_student(
+            o.get("ogrenci_no", ""), o.get("ad_soyad", ""), roster, p_no, o.get("liste_secimi"))
+        r["eminlik_kimlik"] = round(k, 4)
+        if (k < 0.9 or r["eslesme_notu"]) and r.get("resimler") and roster:
+            recheck.append(r["id"])
 
 
 class SheetsIn(BaseModel):
@@ -724,18 +790,7 @@ async def liste_yukle(exam_id: str, metin: str = Form(""), dosya: UploadFile | N
         e["ogrenci_listesi"] = roster
         # bu sınıfın sonraki sınavlarında liste kendiliğinden gelsin
         store.save_class_roster(e.get("sinif", ""), roster)
-        # onaylanmamış ve öğretmenin elle düzeltmediği kayıtları yeni listeye göre tekrar eşleştir
-        for r in e["kayitlar"]:
-            if r.get("durum") != "tamam" or r.get("onaylandi") or not r.get("okunan") or r.get("eminlik_kimlik") == 1.0:
-                continue
-            o = r["okunan"]
-            p_no = (o.get("eminlik") or {}).get("no", 0.9)
-            r["ogrenci_no"], r["ad_soyad"], r["eslesme_notu"], r["eslesme_bilgi"], k = resolve_student(
-                o.get("ogrenci_no", ""), o.get("ad_soyad", ""), roster, p_no, o.get("liste_secimi"))
-            r["eminlik_kimlik"] = round(k, 4)
-            # hâlâ belirsizse başlığı (yalnızca başlığı) listeyle karşılaştırmak için sıraya al
-            if (k < 0.9 or r["eslesme_notu"]) and r.get("resimler"):
-                recheck.append(r["id"])
+        _rematch_roster(e, recheck)
 
     exam = store.update_exam(exam_id, fn)
     for rid in recheck:
@@ -789,6 +844,16 @@ def _ingest(exam_id: str, files: list[tuple[str, bytes]], mode: str, kayit_id: s
             accepted.append((digest, pages))
     if not accepted and not skipped:
         raise HTTPException(400, "; ".join(bad) if bad else "Fotoğraf yok")
+    per0 = max(1, int(exam0.get("sayfa_sayisi", 1)))
+    if mode == "sayfa" and not kayit_id and not oturum and per0 > 1 and (bad or skipped):
+        # Sayfalar sırayla N'er N'er öğrencilere ayrılıyor: aradan bir dosya düşerse sonraki bütün öğrencilerin
+        # sayfaları karışır (bir öğrencinin 1. sayfası ile ötekinin 2. sayfası aynı kağıt olur). Hiçbirini ekleme.
+        for _d, pages in accepted:
+            for name in pages:
+                store.unlink(store.image_dir(exam_id) / name)
+        raise HTTPException(400, f"{len(bad) + skipped} dosya okunamadı ya da zaten ekliydi. Sayfalar {per0}'er {per0}'er "
+                                 "öğrencilere ayrıldığı için öğrenciler karışacaktı; hiçbir sayfa eklenmedi. O dosyaları çıkarıp "
+                                 "yeniden gönderin" + ("; " + "; ".join(bad) if bad else ""))
 
     queued: list[str] = []
     info: dict = {}
@@ -801,10 +866,12 @@ def _ingest(exam_id: str, files: list[tuple[str, bytes]], mode: str, kayit_id: s
         nonlocal skipped
         for digest, pages in accepted:
             if digest in ozet:
+                if mode == "sayfa" and not kayit_id and not oturum and per0 > 1:
+                    raise _Shift  # bu arada aynı dosya eklenmiş: gruplama kayardı
                 dropped.extend(pages)
                 skipped += 1
                 continue
-            ozet[digest] = pages[0]
+            ozet[digest] = list(pages)
             names.extend(pages)
         per = max(1, int(e.get("sayfa_sayisi", 1)))
         if oturum:
@@ -858,9 +925,13 @@ def _ingest(exam_id: str, files: list[tuple[str, bytes]], mode: str, kayit_id: s
     except KeyError:
         dropped.extend(p for _, pages in accepted for p in pages)
         raise HTTPException(404, "Kağıt bulunamadı")
+    except _Shift:
+        dropped.extend(p for _, pages in accepted for p in pages)
+        raise HTTPException(409, "Dosyalardan biri bu arada eklenmiş; öğrenciler karışmasın diye hiçbir sayfa eklenmedi. "
+                                 "Yeniden gönderin.")
     finally:
         for name in dropped:
-            (store.image_dir(exam_id) / name).unlink(missing_ok=True)
+            store.unlink(store.image_dir(exam_id) / name)
     for rid in queued:
         _jobs.put((exam_id, rid))
     return {"kayitlar": queued, "sayfa": sum(len(p) for _, p in accepted) - len(dropped), "atlanan": skipped,
@@ -940,7 +1011,7 @@ def oturum_geri_al(exam_id: str, sid: str):
 
     exam = store.update_exam(exam_id, fn)
     for name in removed:
-        (store.image_dir(exam_id) / name).unlink(missing_ok=True)
+        store.unlink(store.image_dir(exam_id) / name)
     return _session_info(exam, sid)
 
 
@@ -1001,11 +1072,13 @@ class RecordIn(BaseModel):
     toplam_uyarisi_kapali: bool | None = None
     yazili_toplam: float | None = None
     yazili_toplam_sil: bool = False
+    yalniz_uyarisiz: bool = False  # toplu onay: kağıt o an hâlâ uyarısızsa onayla
 
 
 @app.patch("/api/sinavlar/{exam_id}/kagit/{rec_id}")
 def kagit_duzenle(exam_id: str, rec_id: str, body: RecordIn):
     _exam_or_404(exam_id)
+    edits = body.model_dump(exclude_defaults=True)
 
     def set_cell(r: dict, n: int, i: int, value: float | None) -> None:
         puanlar = (list(r.get("puanlar") or []) + [None] * n)[:n]
@@ -1026,11 +1099,23 @@ def kagit_duzenle(exam_id: str, rec_id: str, body: RecordIn):
         except KeyError:
             raise HTTPException(404, "Kağıt bulunamadı")
         n = len(e["tam_puanlar"])
+        if r.get("durum") != "tamam" and edits:
+            # okunurken/okunmayı beklerken yapılan düzeltme, okuma bitince yeni sonuçla sessizce ezilirdi
+            raise HTTPException(409, "Bu kağıt yeniden okunuyor; okuma bitince düzeltin.")
+        if body.onaylandi and body.yalniz_uyarisiz:
+            counts: dict[str, int] = {}
+            for x in e["kayitlar"]:
+                if x.get("durum") == "tamam" and x.get("ogrenci_no"):
+                    counts[x["ogrenci_no"]] = counts.get(x["ogrenci_no"], 0) + 1
+            row, cells = record_warnings(r, e, {k for k, c in counts.items() if c > 1})
+            if row or cells:
+                raise HTTPException(409, "Kağıt bu arada uyarı aldı; onaylanmadı.")
         if body.ogrenci_no is not None:
             no = re.sub(r"\D", "", body.ogrenci_no)
             r["ogrenci_no"] = no
             r["eslesme_notu"] = r["eslesme_bilgi"] = ""
-            r["eminlik_kimlik"] = 1.0  # öğretmen girdi
+            r["eminlik_kimlik"] = 1.0
+            r["kimlik_elle"] = True  # öğretmen girdi: liste sonradan değişse de dokunulmaz
             match = next((s for s in e["ogrenci_listesi"] if s["no"] == no), None)
             if match and body.ad_soyad is None:
                 r["ad_soyad"] = match["ad"]
@@ -1038,6 +1123,7 @@ def kagit_duzenle(exam_id: str, rec_id: str, body: RecordIn):
             r["ad_soyad"] = " ".join(body.ad_soyad.split())
             r["eslesme_notu"] = r["eslesme_bilgi"] = ""
             r["eminlik_kimlik"] = 1.0
+            r["kimlik_elle"] = True
         if body.puan is not None:
             if not 0 <= body.puan.soru < n:
                 raise HTTPException(400, "Geçersiz soru")
@@ -1093,7 +1179,7 @@ def kagit_sil(exam_id: str, rec_id: str):
         _forget_images(e, removed)
     store.update_exam(exam_id, fn)
     for name in removed:
-        (store.image_dir(exam_id) / name).unlink(missing_ok=True)
+        store.unlink(store.image_dir(exam_id) / name)
     return {"ok": True}
 
 
@@ -1130,7 +1216,7 @@ def resimleri_sil(exam_id: str):
         keep.update((e.get("sablon") or {}).get("sayfalar", []))  # şablon, yeni kağıtlar için gerekli
     store.update_exam(exam_id, fn)
     for name in removed:
-        (store.image_dir(exam_id) / name).unlink(missing_ok=True)
+        store.unlink(store.image_dir(exam_id) / name)
     # kayda bağlanmamış eski artıklar (yarım kalmış yüklemeler); az önce yüklenmiş olabilecekleri koru
     for f in store.image_dir(exam_id).glob("*.jpg"):
         if f.name not in keep and time.time() - f.stat().st_mtime > 600:
@@ -1201,7 +1287,7 @@ def sablon_kaydet(exam_id: str, body: TemplateIn):
                 names.append(new)
         for name in old:
             if name not in names:
-                (store.image_dir(exam_id) / name).unlink(missing_ok=True)
+                store.unlink(store.image_dir(exam_id) / name)
         e["sablon"] = {"sayfalar": names, "kutular": sorted(by_q.values(), key=lambda b: (b["soru"] <= 0, b["soru"]))}
     return annotate(store.update_exam(exam_id, fn))
 
@@ -1215,7 +1301,7 @@ def sablon_sil(exam_id: str):
         e.pop("sablon", None)
     exam = store.update_exam(exam_id, fn)
     for name in names:
-        (store.image_dir(exam_id) / name).unlink(missing_ok=True)
+        store.unlink(store.image_dir(exam_id) / name)
     return annotate(exam)
 
 

@@ -26,8 +26,10 @@ DEFAULTS = {
     # yok sayılır (kurşun kalemle sonradan yazılan bir rakam sistemi kandıramasın). Öğretmen siyah kalem kullanıyorsa kapatılır.
     "yalnizca_renkli_kalem": True,
     # Çapraz kontrol için ikinci (farklı eğitilmiş) model: okunan her puan bununla bir kez daha okunur, tutmazsa hücre
-    # kontrole düşer. Boş bırakılırsa ya da model yüklü değilse bu kontrol yapılmaz.
-    "ikinci_model": "minicpm-v:8b",
+    # kontrole düşer. Varsayılan kapalı: denenen minicpm-v:8b Türkçe el yazısında ana modelden zayıf çıktı (açık uçlu
+    # "4"ü "1"/"7" okudu) ve doğru okunan hücrelerin ~%20'sini gereksiz yere kontrole düşürdü; sessiz hataları ise
+    # süzgeçsiz bakış zaten yakalıyor. "kapali" ya da bir model adı.
+    "ikinci_model": "kapali",
 }
 
 _lock = threading.Lock()
@@ -74,5 +76,10 @@ def save_settings(changes: dict) -> dict:
     current.pop("eminlik_esigi", None)  # kaldırılan ayar
     with _lock:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:  # yarım yazılmış ayar dosyası kalmasın
+            fh.write(json.dumps(current, ensure_ascii=False, indent=2))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, SETTINGS_FILE)
     return current

@@ -45,6 +45,7 @@ class Aligner:
         self.pages = pages
         self.orb = cv2.ORB_create(nfeatures=8000)
         self.feats = [self._features(p) for p in pages]
+        self.last_cover = None
 
     def _features(self, a: np.ndarray):
         g = cv2.cvtColor(a, cv2.COLOR_RGB2GRAY)
@@ -96,6 +97,10 @@ class Aligner:
         tpl = self.pages[i]
         warped = cv2.warpPerspective(photo, H, (tpl.shape[1], tpl.shape[0]), flags=cv2.INTER_CUBIC,
                                      borderValue=(255, 255, 255))
+        # fotoğrafın şablonda kapladığı alan: kağıt fotoğrafta kırpılmışsa dışarıda kalan kutular beyaz görünür ve
+        # kesik rakam bütün bakışlarda aynı (yanlış) okunurdu
+        self.last_cover = cv2.warpPerspective(np.full(photo.shape[:2], 255, np.uint8), H, (tpl.shape[1], tpl.shape[0]),
+                                              flags=cv2.INTER_NEAREST, borderValue=0) > 0
         return i, warped, inl
 
 

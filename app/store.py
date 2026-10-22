@@ -1,5 +1,6 @@
 """Sınav ve kağıt kayıtlarının diskte (JSON) saklanması."""
 import json
+import os
 import shutil
 import threading
 import time
@@ -26,15 +27,40 @@ def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def write_durable(path: Path, text: str) -> None:
+    """Dosyayı diske gerçekten yazıp (fsync) öyle yerine koyar: elektrik kesilir ya da bilgisayar kapanırsa dosya
+    boş/bozuk kalmasın (yalnızca yeniden adlandırma günlüğe yazılıp veri yazılmamış olabiliyordu)."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _read_exam_dir(d: Path) -> dict:
+    """sinav.json okunamazsa (bozuk/boş) son sağlam kopyaya (sinav.json.bak) döner."""
+    for name in ("sinav.json", "sinav.json.bak"):
+        try:
+            data = json.loads((d / name).read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("id"):
+                return data
+        except (OSError, ValueError):
+            continue
+    raise KeyError(d.name)
+
+
 def list_exams() -> list[dict]:
     with _lock:
         if not EXAMS_DIR.exists():
             return []
         exams = []
-        for f in EXAMS_DIR.glob("*/sinav.json"):
+        for d in EXAMS_DIR.iterdir():
+            if not d.is_dir():
+                continue
             try:
-                exams.append(json.loads(f.read_text(encoding="utf-8")))
-            except (OSError, ValueError):
+                exams.append(_read_exam_dir(d))
+            except KeyError:
                 continue
         exams.sort(key=lambda e: e.get("olusturma", 0), reverse=True)
         return exams
@@ -42,19 +68,25 @@ def list_exams() -> list[dict]:
 
 def get_exam(exam_id: str) -> dict:
     with _lock:
-        f = _exam_file(exam_id)
-        if not f.exists():
+        d = _exam_dir(exam_id)
+        if not d.is_dir():
             raise KeyError(exam_id)
-        return json.loads(f.read_text(encoding="utf-8"))
+        return _read_exam_dir(d)
 
 
 def save_exam(exam: dict) -> None:
     with _lock:
         d = _exam_dir(exam["id"])
         (d / "resimler").mkdir(parents=True, exist_ok=True)
-        tmp = d / "sinav.json.tmp"
-        tmp.write_text(json.dumps(exam, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(d / "sinav.json")
+        f = d / "sinav.json"
+        if f.exists():
+            try:
+                old = f.read_text(encoding="utf-8")
+                json.loads(old)  # yalnızca sağlam bir önceki sürüm yedeklensin
+                write_durable(d / "sinav.json.bak", old)
+            except (OSError, ValueError):
+                pass
+        write_durable(f, json.dumps(exam, ensure_ascii=False, indent=1))
 
 
 def create_exam(ad: str, sinif: str, ders: str, tam_puanlar: list[float], sayfa_sayisi: int = 1) -> dict:
@@ -113,14 +145,46 @@ def save_class_roster(sinif: str, roster: list[dict]) -> None:
         data = _load_classes()
         data[key] = {"ad": sinif, "liste": roster, "guncelleme": time.time()}
         CLASSES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = CLASSES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(CLASSES_FILE)
+        write_durable(CLASSES_FILE, json.dumps(data, ensure_ascii=False, indent=1))
+
+
+def remove_tree(d: Path, tries: int = 20) -> bool:
+    """Klasörü siler; Windows'ta o an açık bir dosya (sunulan resim, virüs taraması) varsa kısa süre yeniden dener."""
+    for _ in range(tries):
+        shutil.rmtree(d, ignore_errors=True)
+        if not d.exists():
+            return True
+        time.sleep(0.1)
+    return not d.exists()
+
+
+def unlink(path: Path, tries: int = 20) -> bool:
+    """Dosyayı siler; açıksa kısa süre yeniden dener. Silinemezse False (öğrenci fotoğrafı sessizce kalmasın)."""
+    for _ in range(tries):
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except PermissionError:
+            time.sleep(0.1)
+        except OSError:
+            return False
+    return False
 
 
 def delete_exam(exam_id: str) -> None:
     with _lock:
-        shutil.rmtree(_exam_dir(exam_id), ignore_errors=True)
+        if not remove_tree(_exam_dir(exam_id)):
+            raise OSError("Bazı fotoğraflar şu an kullanımda olduğu için silinemedi")
+
+
+def cleanup_orphans() -> None:
+    """Silinirken bir dosyası açık kalmış sınav klasörlerini temizle (sinav.json'u ve yedeği olmayan)."""
+    with _lock:
+        if not EXAMS_DIR.exists():
+            return
+        for d in EXAMS_DIR.iterdir():
+            if d.is_dir() and not (d / "sinav.json").exists() and not (d / "sinav.json.bak").exists():
+                remove_tree(d, tries=3)
 
 
 def image_dir(exam_id: str) -> Path:
