@@ -759,6 +759,35 @@ def _ask_grid_part(llm: "_Ollama", part: list, prompt: str, cell: int, cols: int
     return vals
 
 
+def crop_alone(img: np.ndarray, box, pad: float, others: list) -> np.ndarray:
+    """Kutuyu kenar payıyla kırpar; komşu puan kutularının (others) bu kırpıma taşan kısmı beyaza boyanır. Geniş bir
+    kırpım komşu sorunun puanını da içine alıyordu (gerçek kağıtta S2'nin bir bakışı üstteki S1'in 15'ini okudu)."""
+    from . import sablon
+    part = sablon.crop(img, box, pad).copy()
+    if not others or part.size == 0:
+        return part
+    H, W = img.shape[:2]
+    bx1, by1 = box.x * W, box.y * H
+    bx2, by2 = bx1 + box.w * W, by1 + box.h * H
+    px, py = (bx2 - bx1) * pad, (by2 - by1) * pad
+    cx1, cy1 = int(max(0, bx1 - px)), int(max(0, by1 - py))
+    for o in others:
+        ox1, oy1 = o.x * W, o.y * H
+        ox2, oy2 = ox1 + o.w * W, oy1 + o.h * H
+        x1, y1 = int(max(ox1, cx1)), int(max(oy1, cy1))
+        x2, y2 = int(min(ox2, cx1 + part.shape[1])), int(min(oy2, cy1 + part.shape[0]))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        region = np.zeros(part.shape[:2], bool)
+        region[y1 - cy1:y2 - cy1, x1 - cx1:x2 - cx1] = True
+        # bu kutunun kendisiyle örtüşen kısım korunur
+        mx1, my1 = int(max(0, bx1 - cx1)), int(max(0, by1 - cy1))
+        mx2, my2 = int(min(part.shape[1], bx2 - cx1)), int(min(part.shape[0], by2 - cy1))
+        region[my1:my2, mx1:mx2] = False
+        part[region] = 255
+    return part
+
+
 def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
     """Bir kağıdın bütün puan kutularını toplu okur. items: [(asıl sayfa, renkli kalem sayfası, Box)].
     Dönüş, her kutu için _read_box ile aynı biçimde: {"deger", "eminlik", "oylar", "not", "kontrol"}."""
@@ -769,6 +798,13 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
     n = len(items)
     votes: list[list] = [[] for _ in range(n)]
     results: list[dict | None] = [None] * n
+    # aynı sayfadaki öteki kutular: kırpımlarda beyaza boyanır (komşunun puanı okunmasın)
+    others = [[b2 for (p2, _q2, b2) in items if b2 is not box and b2.sayfa == box.sayfa and p2 is page]
+              for (page, _pen, box) in items]
+
+    def crop_of(i: int, which: int, pad: float) -> np.ndarray:
+        return crop_alone(items[i][which], items[i][2], pad, others[i])
+
     active = []
     for i, (_page, pen, box) in enumerate(items):
         near = sablon.crop(pen, box, 0.35)
@@ -784,7 +820,7 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
             progress(f"Puanlar okunuyor (bakış {vi + 1}/{len(GRID_VIEWS) + 1})…")
         order = list(active)
         random.Random(seed).shuffle(order)
-        vals = ask_grid(llm, [sablon.crop(items[i][1], items[i][2], pad) for i in order], GRID_PEN_PROMPT)
+        vals = ask_grid(llm, [crop_of(i, 1, pad) for i in order], GRID_PEN_PROMPT)
         for i, v in zip(order, vals):
             votes[i].append((vname, v, 0.0, 1.0))
 
@@ -793,9 +829,8 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
     for k, i in enumerate(disputed):
         if progress:
             progress(f"Tutmayan puan yakından okunuyor ({k + 1}/{len(disputed)})…")
-        pen, box = items[i][1], items[i][2]
         for name, pad, _ink, _w in _PEN_EXTRA:
-            part = sablon.crop(pen, box, pad)
+            part = crop_of(i, 1, pad)
             if part.size == 0:
                 continue
             ans = llm.ask(INK_PROMPT, Image.fromarray(part), SCORE_SCHEMA, side=CROP_SIDE, logprobs=False)
@@ -805,7 +840,7 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
     # çapraz kontrol: süzgeçsiz görüntüden bir toplu bakış (değer yine renkli kalemden alınır)
     if progress:
         progress(f"Puanlar okunuyor (bakış {len(GRID_VIEWS) + 1}/{len(GRID_VIEWS) + 1}, süzgeçsiz)…")
-    plain = ask_grid(llm, [sablon.crop(items[i][0], items[i][2], 0.25) for i in active], GRID_ORIG_PROMPT)
+    plain = ask_grid(llm, [crop_of(i, 0, 0.25) for i in active], GRID_ORIG_PROMPT)
 
     for i, v_plain in zip(active, plain):
         value, top, total = sablon.weighted_vote([(v, w) for _n, v, _c, w in votes[i]])
@@ -824,7 +859,7 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
             notes.append(f"Süzgeçsiz görüntüde {'puan yok' if v_plain is None else f'{v_plain:g}'} okundu "
                          "(kurşun kalem eki ya da silik mürekkep olabilir)")
         results[i] = {"deger": value, "eminlik": top / total if total else 0.0, "oylar": oylar, "not": "; ".join(notes),
-                      "kontrol": Image.fromarray(sablon.crop(items[i][1], items[i][2], 0.22))}
+                      "kontrol": Image.fromarray(crop_of(i, 1, 0.22))}
     return results
 
 
@@ -1349,7 +1384,13 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
     head_total = parse_number(header.get("total_score"))
     pool = [t for t in reads if t[1]["deger"] > max(maxes)]
     if not pool and head_total is not None and head_total > 0:
-        pool = [t for t in reads if t[0].sayfa == 0 and t[0].y + t[0].h / 2 < 0.3 and abs(t[1]["deger"] - head_total) < 0.01]
+        # Başlık okuması, başlığın hemen altındaki 1. sorunun puanını da "toplam" sanabiliyor (gerçek kağıtta S1=15
+        # toplam sanıldı, bütün puanlar bir soru kaydı). Bu yüzden başlıktaki sayıyla eşleşen aday ancak toplam gibi
+        # davranıyorsa toplam sayılır: soru sayısından fazla aday var ya da değeri öteki puanların toplamına eşit.
+        def others(t):
+            return sum(x[1]["deger"] for x in reads if x is not t)
+        pool = [t for t in reads if t[0].sayfa == 0 and t[0].y + t[0].h / 2 < 0.3 and abs(t[1]["deger"] - head_total) < 0.01
+                and (len(reads) > n or abs(t[1]["deger"] - others(t)) < 0.01)]
     if not pool and len(reads) > n:
         all_sum = sum(t[1]["deger"] for t in reads)
         pool = [t for t in reads if t[1]["deger"] > 0 and abs(2 * t[1]["deger"] - all_sum) < 0.01]
