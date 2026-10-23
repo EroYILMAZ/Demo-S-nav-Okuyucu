@@ -7,6 +7,8 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from . import sorular
+
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 WARN_FILL = PatternFill("solid", fgColor="FFF2CC")
 THIN = Side(style="thin", color="BFBFBF")
@@ -48,7 +50,7 @@ def build_workbook(exam: dict) -> bytes:
     ws["A2"].font = Font(italic=True, color="7F7F7F", size=9)
 
     hr = 4
-    headers = ["Sıra", "Okul No", "Adı Soyadı"] + [f"S{i + 1} ({m:g})" for i, m in enumerate(maxes)] + [
+    headers = ["Sıra", "Okul No", "Adı Soyadı"] + [f"S{lab} ({m:g})" for lab, m in zip(sorular.labels_of(exam), maxes)] + [
         f"Toplam ({sum(maxes):g})",
         "Kontrol",
     ]

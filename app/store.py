@@ -89,7 +89,8 @@ def save_exam(exam: dict) -> None:
         write_durable(f, json.dumps(exam, ensure_ascii=False, indent=1))
 
 
-def create_exam(ad: str, sinif: str, ders: str, tam_puanlar: list[float], sayfa_sayisi: int = 1) -> dict:
+def create_exam(ad: str, sinif: str, ders: str, tam_puanlar: list[float], sayfa_sayisi: int = 1,
+                soru_adlari: list[str] | None = None) -> dict:
     exam = {
         "id": new_id(),
         "ad": ad,
@@ -97,6 +98,7 @@ def create_exam(ad: str, sinif: str, ders: str, tam_puanlar: list[float], sayfa_
         "ders": ders,
         "olusturma": time.time(),
         "tam_puanlar": tam_puanlar,
+        "soru_adlari": list(soru_adlari or []),
         "sayfa_sayisi": sayfa_sayisi,
         # bu sınıfın listesi daha önce kaydedildiyse kendiliğinden ekle
         "ogrenci_listesi": get_class_roster(sinif),

@@ -25,6 +25,9 @@ DEFAULTS = {
     # Puanlar yalnızca renkli tükenmez kalemden (mavi, kırmızı, yeşil, mor) okunur; kurşun kalem ve siyah/gri izler
     # yok sayılır (kurşun kalemle sonradan yazılan bir rakam sistemi kandıramasın). Öğretmen siyah kalem kullanıyorsa kapatılır.
     "yalnizca_renkli_kalem": True,
+    # öğretmenin puan kalemi: "otomatik" (renkli kalemlerin hepsi; öğrenci de renkli kalem kullandıysa renge göre ayrılır)
+    # ya da "kirmizi" / "mavi" / "yesil" (yalnızca o renk okunur)
+    "ogretmen_kalem_rengi": "otomatik",
     # Çapraz kontrol için ikinci (farklı eğitilmiş) model: okunan her puan bununla bir kez daha okunur, tutmazsa hücre
     # kontrole düşer. Varsayılan kapalı: denenen minicpm-v:8b Türkçe el yazısında ana modelden zayıf çıktı (açık uçlu
     # "4"ü "1"/"7" okudu) ve doğru okunan hücrelerin ~%20'sini gereksiz yere kontrole düşürdü; sessiz hataları ise
@@ -57,6 +60,10 @@ def save_settings(changes: dict) -> dict:
             continue
         if key == "ollama_gpu":
             if changes[key] in ("otomatik", "vulkan", "cuda", "cpu"):
+                current[key] = changes[key]
+            continue
+        if key == "ogretmen_kalem_rengi":
+            if changes[key] in ("otomatik", "kirmizi", "mavi", "yesil"):
                 current[key] = changes[key]
             continue
         if isinstance(DEFAULTS[key], bool):

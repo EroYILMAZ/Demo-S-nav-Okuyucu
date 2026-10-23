@@ -135,8 +135,10 @@ def resolve_student(no: str, name: str, roster: list[dict], p_no: float = 0.9, c
     """
     if not roster:
         return no, tr_title(name), "", "", (p_no if no else 0.0)
+    if not no and not name.strip() and not (choice or {}).get("no"):
+        return "", "", "Kağıtta öğrencinin adı ve numarası bulunamadı (yazılmamış olabilir).", "", 0.0
 
-    by_no = next((s for s in roster if s["no"] == no), None) if no else None
+    by_no =next((s for s in roster if s["no"] == no), None) if no else None
     best = max(roster, key=lambda s: name_similarity(name, s["ad"]))
     best_sim = name_similarity(name, best["ad"])
     ch_no = (choice or {}).get("no")

@@ -12,6 +12,8 @@ Renkli mürekkep (mavi, kırmızı, yeşil, mor) ise kağıda göre belirgin bir
   3. Uzun düz renksiz çizgiler (basılı sütun ayıracı, tablo) şekillerinden tanınıp dışarıda bırakılır.
   4. Oranı yüksek yerler ve onlara bitişik zayıf renkli pikseller bırakılır, geri kalan her şey beyaz kağıt olur.
 Sonuç: siyah tükenmez kalemle verilen puanlar da silinir; bu yüzden süzgeç ayarlardan kapatılabilir.
+Öğrenci de renkli kalem kullandıysa (çoğunlukla mavi; öğretmen kırmızı) renkli izler renk ailelerine ayrılır
+(kırmızı/pembe, mavi/mor, yeşil) ve yalnızca öğretmenin kalemi bırakılabilir (bkz. ink_family, family).
 Süzgeç bütün sayfaya uygulanmalı (kırpıma değil): çizgi uzunluğu sayfa boyuna göre ölçülür.
 """
 from __future__ import annotations
@@ -109,24 +111,55 @@ def analyze(a: np.ndarray) -> dict:
     r = max(1, int(round(s)))
     pen = cv2.dilate(core.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))) > 0
     pen &= ink
-    return {"norm": n, "ink": ink, "pen": pen, "color": color}
+    return {"norm": n, "ink": ink, "pen": pen, "color": color, "ca": ca, "cb": cb}
 
 
-def pen_only(a: np.ndarray) -> tuple[np.ndarray, float]:
-    """Yalnızca renkli mürekkebi bırakır (beyaz kağıt üzerinde). Dönüş: (görüntü, renkli mürekkep oranı)."""
+FAMILIES = {"kirmizi": 1, "mavi": 2, "yesil": 3}
+FAMILY_NAMES = {1: "kırmızı", 2: "mavi", 3: "yeşil"}
+
+
+def ink_family(an: dict) -> np.ndarray:
+    """Renkli mürekkep piksellerinin renk ailesi: 1 kırmızı/pembe/turuncu, 2 mavi/mor/lacivert, 3 yeşil (0: mürekkep
+    değil). Renk, piksel piksel değil her kalem çizgisinin (bağlı bileşenin) ortalama Lab renk açısından bulunur:
+    fotoğrafta rengi zayıf kenar pikselleri rastgele açılara dağılıyordu (mavi kağıtta mürekkebin %12'si "yeşil" çıktı).
+    Gerçek kağıtlarda ölçülen: mavi tükenmez -120..-45 derece, kırmızı -30..+15. Mor maviye, pembe kırmızıya düşer."""
+    pen = an["pen"]
+    num, lab = cv2.connectedComponents(pen.astype(np.uint8), connectivity=8)
+    w = pen.ravel().astype(np.float64)
+    ca = np.bincount(lab.ravel(), weights=an["ca"].ravel() * w, minlength=num)
+    cb = np.bincount(lab.ravel(), weights=an["cb"].ravel() * w, minlength=num)
+    ang = np.degrees(np.arctan2(cb, ca))
+    fam = np.full(num, 2, np.uint8)                        # -170..-40 derece: mavi, mor, lacivert
+    fam[(ang >= -40) & (ang < 80)] = 1                     # kırmızı, pembe, turuncu
+    fam[(ang >= 80) | (ang < -170)] = 3                    # yeşil
+    fam[0] = 0
+    return fam[lab]
+
+
+def family(an: dict, name: str | None) -> np.ndarray:
+    """Renkli mürekkep maskesi; name verilirse ("kirmizi", "mavi", "yesil") yalnızca o renk ailesi."""
+    if not name or name not in FAMILIES:
+        return an["pen"]
+    return an["pen"] & (ink_family(an) == FAMILIES[name])
+
+
+def pen_only(a: np.ndarray, color: str | None = None) -> tuple[np.ndarray, float]:
+    """Yalnızca renkli mürekkebi (color verilirse yalnızca o renk ailesini) bırakır, beyaz kağıt üzerinde.
+    Dönüş: (görüntü, renkli mürekkep oranı)."""
     an = analyze(a)
+    pen = family(an, color)
     out = np.full(a.shape, 255, np.uint8)
-    out[an["pen"]] = (an["norm"][an["pen"]] * 255).astype(np.uint8)
-    return out, float(an["pen"].mean())
+    out[pen] = (an["norm"][pen] * 255).astype(np.uint8)
+    return out, float(pen.mean())
 
 
-def pen_and_faded(a: np.ndarray, strength: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+def pen_and_faded(a: np.ndarray, strength: float = 0.5, color: str | None = None) -> tuple[np.ndarray, np.ndarray]:
     """İki görüntü birden: (yalnızca renkli mürekkep, renksizleri soluklaştırılmış sayfa).
     İkincisi şablonsuz okumada kullanılır: renkli mürekkep olduğu gibi kalır, gri/siyah her şey (basılı yazı,
     kurşun kalem) soluklaşır. Model basılı soru numaralarını yine görür ama puan diye yalnızca renkli mürekkebe
     bakması istenir."""
     an = analyze(a)
-    n, pen = an["norm"], an["pen"]
+    n, pen = an["norm"], family(an, color)
     only = np.full(a.shape, 255, np.uint8)
     only[pen] = (n[pen] * 255).astype(np.uint8)
     gray = n.mean(axis=2, keepdims=True)

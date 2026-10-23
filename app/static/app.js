@@ -75,6 +75,14 @@ async function api(path, opts = {}) {
 const json = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const totalOf = (r) => (r.puanlar || []).reduce((a, p) => a + (p || 0), 0);
 const maxTotal = () => state.exam.tam_puanlar.reduce((a, b) => a + b, 0);
+/** Puan hücrelerinin kağıttaki soru numaraları ("1", "2", "3a", "3b"...); tanımlanmamışsa 1..n. */
+const qLabels = (ex = state.exam) => (ex.soru_adlari?.length === ex.tam_puanlar.length ? ex.soru_adlari : ex.tam_puanlar.map((_, i) => String(i + 1)));
+const qlab = (i, ex = state.exam) => qLabels(ex)[i] ?? String(i + 1);
+/** "8 soru" ya da maddeli sınavda "6 soru · 8 puan sütunu" */
+const questionCount = (ex = state.exam) => {
+  const n = ex.tam_puanlar.length, q = new Set(qLabels(ex).map((l) => parseInt(l, 10))).size;
+  return q === n ? `${n} soru` : `${q} soru · ${n} puan sütunu`;
+};
 const pagesPer = () => Math.max(1, state.exam?.sayfa_sayisi || 1);
 const sheetsPer = () => Math.max(1, state.exam?.fotodaki_kagit || 1);  // bir fotoğrafta kaç kağıt var
 const hasWarn = (r) => r.durum === "tamam" && !r.onaylandi && (r.uyarilar.length > 0 || Object.keys(r.hucre_uyarilari).length > 0);
@@ -309,7 +317,12 @@ async function examDialog(ex, { copy = false } = {}) {
         <p class="hint">Sayfa sayısını doğru seçerseniz fotoğraflar ve PDF sayfaları sırayla aynı öğrenciye bağlanır; “Sayfa ekle” gerekmez.</p>
         <p class="hint" style="margin-top:14px">Tam puanlar · toplam <b id="sum">0</b></p>
         <div class="maxes" id="maxes"></div>
-        ${editing && ex.kayitlar.length ? `<p class="hint">Soru sayısını değiştirirseniz okunmuş kağıtlarda yeni sorular boş kalır.</p>` : ""}
+        <p class="hint">Bir soru A ve B maddelerine ayrılmışsa ve her maddeye ayrı puan veriyorsanız o sorunun altındaki
+          <b>a/b</b> düğmesine basın (3a, 3b ayrı sütun olur). Kağıttaki numaralar farklıysa (ör. 5 atlanmış) numaraya tıklayıp
+          kağıttaki gibi yazın: puanlar, yanlarındaki basılı numarayla doğrulanarak okunur.</p>
+        ${editing && ex.kayitlar.length ? `<p class="hint">Okunmuş kağıtlarda puanlar soru numarasına göre taşınır: birleştirdiğiniz
+          maddelerin puanları toplanır; böldüğünüz sorunun maddeleri ve yeni sorular boş kalıp kontrole düşer. Şablon kullanıyorsanız
+          değişen soruların kutusunu yeniden çizin.</p>` : ""}
       </div>
       <div class="m-foot"><button type="button" class="btn" data-close>Vazgeç</button><button class="btn primary">${editing ? "Kaydet" : "Oluştur"}</button></div>
     </form>`);
@@ -322,28 +335,79 @@ async function examDialog(ex, { copy = false } = {}) {
   f.sinif.addEventListener("input", hint);
   hint();
   const grid = document.getElementById("maxes");
-  const sum = () => (document.getElementById("sum").textContent = fmt([...grid.querySelectorAll("input")].reduce((a, i) => a + (parseScore(i.value) || 0), 0)));
-  const build = () => {
-    const n = Math.max(1, Math.min(50, parseInt(f.n.value) || 1));
-    const cur = [...grid.querySelectorAll("input")].map((i) => i.value);
-    const each = Math.floor(100 / n), rest = 100 - each * n;
-    grid.innerHTML = Array.from({ length: n }, (_, i) => {
-      const v = cur[i] ?? (ex?.tam_puanlar[i] !== undefined ? fmt(ex.tam_puanlar[i]) : String(each + (i < rest ? 1 : 0)));
-      return `<label>S${i + 1}<input inputmode="decimal" value="${esc(v)}"></label>`;
+  const vals = () => [...grid.querySelectorAll("input.val")];
+  const sum = () => (document.getElementById("sum").textContent = fmt(vals().reduce((a, i) => a + (parseScore(i.value) || 0), 0)));
+  const LAB = /^(\d{1,3})([a-zçğıöşü]?)$/;
+  const normLab = (v) => String(v || "").replace(/[\s\-.)(:/]/g, "").replace(/I/g, "ı").replace(/İ/g, "i").toLowerCase();
+  const read = () => [...grid.querySelectorAll(".mx")].map((t) => ({ lab: t.querySelector(".lab").value.trim(), val: t.querySelector(".val").value }));
+  const render = (items) => {
+    grid.innerHTML = items.map((it, i) => {
+      const m = LAB.exec(normLab(it.lab));
+      const parted = m && m[2];
+      return `<div class="mx"><span class="lab-wrap">S<input class="lab" value="${esc(it.lab)}" spellcheck="false" autocomplete="off"
+          aria-label="${i + 1}. hücrenin kağıttaki soru numarası" title="Kağıttaki soru numarası (ör. 4, 3a)"></span>
+        <input class="val" inputmode="decimal" value="${esc(it.val)}" aria-label="S${esc(it.lab)} tam puanı">
+        <span class="ops">${parted
+          ? `<button type="button" data-add="${i}" title="Bu soruya bir madde daha ekle">+</button><button type="button" data-del="${i}" title="Bu maddeyi kaldır">×</button>`
+          : `<button type="button" data-split="${i}" title="Bu soruyu A ve B maddelerine böl (her maddeye ayrı puan)">a/b</button>`}</span></div>`;
     }).join("");
+    f.n.value = items.length;
     sum();
   };
+  const nextNum = (items) => { const m = LAB.exec(normLab(items[items.length - 1]?.lab)); return String((m ? +m[1] : items.length) + 1); };
+  const build = () => {
+    const n = Math.max(1, Math.min(50, parseInt(f.n.value) || 1));
+    const cur = read();
+    const each = Math.floor(100 / n), rest = 100 - each * n;
+    const labs0 = ex ? qLabels(ex) : [];
+    const items = [];
+    for (let i = 0; i < n; i++) {
+      items.push(cur[i] ?? { lab: grid.children.length ? nextNum(items) : (labs0[i] ?? nextNum(items)),
+        val: ex?.tam_puanlar[i] !== undefined && !grid.children.length ? fmt(ex.tam_puanlar[i]) : String(each + (i < rest ? 1 : 0)) });
+    }
+    render(items);
+  };
+  const half = (v) => { const x = parseScore(v); return x > 0 ? fmt(Math.round(x * 5) / 10) : ""; };
+  grid.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const items = read();
+    if (b.dataset.split !== undefined) {           // 3 → 3a, 3b (tam puan ikiye bölünür, öğretmen düzeltir)
+      const i = +b.dataset.split, q = LAB.exec(normLab(items[i].lab))?.[1] ?? String(i + 1);
+      const h = half(items[i].val);
+      items.splice(i, 1, { lab: `${q}a`, val: h }, { lab: `${q}b`, val: h });
+    } else if (b.dataset.add !== undefined) {      // 3b'den sonra 3c
+      const q = LAB.exec(normLab(items[+b.dataset.add].lab))[1];
+      let last = +b.dataset.add;
+      items.forEach((it, j) => { if (LAB.exec(normLab(it.lab))?.[1] === q) last = Math.max(last, j); });
+      const letter = String.fromCharCode(normLab(items[last].lab).slice(-1).charCodeAt(0) + 1);
+      items.splice(last + 1, 0, { lab: `${q}${letter}`, val: "" });
+    } else if (b.dataset.del !== undefined) {      // maddeyi kaldır; tek madde kalırsa soru yeniden bölünmemiş olur
+      const i = +b.dataset.del, q = LAB.exec(normLab(items[i].lab))[1];
+      if (items.length === 1) return;
+      const [gone] = items.splice(i, 1);
+      const left = items.filter((it) => LAB.exec(normLab(it.lab))?.[1] === q && LAB.exec(normLab(it.lab))[2]);
+      if (left.length === 1) {  // bölme geri alındı: soru tam puanını geri alır
+        left[0].lab = q;
+        left[0].val = fmt((parseScore(left[0].val) || 0) + (parseScore(gone.val) || 0));
+      }
+    }
+    render(items);
+  });
   f.n.addEventListener("input", build);
-  f.all.addEventListener("input", () => { if (f.all.value.trim()) { grid.querySelectorAll("input").forEach((i) => (i.value = f.all.value.trim())); sum(); } });
+  f.all.addEventListener("input", () => { if (f.all.value.trim()) { vals().forEach((i) => (i.value = f.all.value.trim())); sum(); } });
   grid.addEventListener("input", sum);
   build();
   f.sinif.focus();
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const tam = [...grid.querySelectorAll("input")].map((i) => parseScore(i.value));
+    const tam = vals().map((i) => parseScore(i.value));
     if (tam.some((v) => !(v > 0))) return toast("Her sorunun tam puanı sıfırdan büyük olmalı", { err: true });
-    const body = { ad: f.ad.value, sinif: f.sinif.value, ders: f.ders.value, tam_puanlar: tam, sayfa_sayisi: +f.sayfa.value,
-      sablon_kaynak: copy ? ex.id : "" };
+    const labs = read().map((it) => normLab(it.lab));
+    const bad = labs.find((l) => !LAB.test(l));
+    if (bad !== undefined) return toast(`“${bad || "boş"}” geçerli bir soru numarası değil (örnek: 4 ya da 3a)`, { err: true });
+    const body = { ad: f.ad.value, sinif: f.sinif.value, ders: f.ders.value, tam_puanlar: tam, soru_adlari: labs,
+      sayfa_sayisi: +f.sayfa.value, sablon_kaynak: copy ? ex.id : "" };
     try {
       if (editing) {
         await api(`/api/sinavlar/${ex.id}`, json("PUT", body));
@@ -396,6 +460,12 @@ document.getElementById("settings-btn").onclick = async () => {
         <p class="hint">Açıkken kurşun kalem ve gri/siyah izler puan olarak okunmaz; kağıda sonradan kurşun kalemle yazılan bir rakam
         sistemi kandıramaz. Fotoğrafta siyah tükenmez ile kurşun kalem ayırt edilemediği için, puanları siyah kalemle veriyorsanız kapatın.
         Ad ve numara her kalemle okunur.</p>
+        <label class="f" style="margin-top:12px">Öğretmenin puan kalemi rengi
+          <select name="ogretmen_kalem_rengi">${[["otomatik", "Otomatik"], ["kirmizi", "Kırmızı / pembe"], ["mavi", "Mavi / mor"], ["yesil", "Yeşil"]]
+            .map(([v, l]) => `<option value="${v}" ${v === (d.ayarlar.ogretmen_kalem_rengi || "otomatik") ? "selected" : ""}>${l}</option>`).join("")}</select>
+        </label>
+        <p class="hint">Öğrenciler de renkli tükenmez kullanıyorsa (ör. öğrenci mavi, siz kırmızı) rengi seçin: yalnızca o renk
+        okunur. “Otomatik”te program iki renk görürse puanları soru sayısına uyan renkten okur ve kağıdı kontrole düşürür.</p>
         <p class="hint">Ekran kartı ayarı programı yeniden açınca geçerli olur. “Otomatik” çalışan yolu kendisi bulur.</p>
         <p class="hint">Çözünürlüğü artırmak küçük yazıları daha iyi okur, ama okumayı yavaşlatır.
         Her puan birkaç kez okunur; okumalar birbirini tutmazsa ya da puan bulunamazsa kağıt “Kontrol” listesine düşer.</p>
@@ -412,7 +482,8 @@ document.getElementById("settings-btn").onclick = async () => {
       const num = (v) => (String(v).trim() === "" ? null : +v);  // boş bırakılan alan değiştirilmesin
       await api("/api/ayarlar", json("PUT", { model: f.model.value, max_kenar: num(f.max_kenar.value), zaman_asimi: num(f.zaman_asimi.value),
         ollama_gpu: f.ollama_gpu.value,
-        yalnizca_renkli_kalem: f.yalnizca_renkli_kalem.checked, ikinci_model: f.ikinci_model.value }));
+        yalnizca_renkli_kalem: f.yalnizca_renkli_kalem.checked, ikinci_model: f.ikinci_model.value,
+        ogretmen_kalem_rengi: f.ogretmen_kalem_rengi.value }));
       closeModal();
       toast("Ayarlar kaydedildi");
       refreshStatus();
@@ -439,7 +510,7 @@ async function showExam(id) {
     <div class="exam-head">
       <div>
         <h1>${esc(title)}</h1>
-        <div class="meta">${esc(exam.ad || "")}${exam.ad ? " · " : ""}${exam.tam_puanlar.length} soru · ${fmt(maxTotal())} puan${pagesPer() > 1 ? ` · kağıt ${pagesPer()} sayfa` : ""}${exam.sablon?.kutular?.length ? " · şablonlu okuma" : ""}</div>
+        <div class="meta">${esc(exam.ad || "")}${exam.ad ? " · " : ""}${questionCount()} · ${fmt(maxTotal())} puan${pagesPer() > 1 ? ` · kağıt ${pagesPer()} sayfa` : ""}${exam.sablon?.kutular?.length ? " · şablonlu okuma" : ""}</div>
       </div>
       <div class="actions">
         <label class="btn primary desk-only" title="Fotoğraflar ya da tarayıcıdan (fotokopi makinesi) PDF. Pencereye sürükleyip bırakabilirsiniz.">${ic("image")}Fotoğraf / PDF ekle<input type="file" accept="image/*,application/pdf" multiple data-upload="many"></label>
@@ -595,7 +666,7 @@ function renderStats() {
 }
 
 function headRow() {
-  const qs = state.exam.tam_puanlar.map((m, i) => `<div>S${i + 1} <small>/${fmt(m)}</small></div>`).join("");
+  const qs = state.exam.tam_puanlar.map((m, i) => `<div>S${esc(qlab(i))} <small>/${fmt(m)}</small></div>`).join("");
   return `<div class="row head"><div></div><div class="c-no">No</div><div class="c-name">Ad soyad</div>${qs}<div>Toplam</div><div title="✓ onaylandı · ! kontrol edilmeli (nedeni satırın altında yazar)">Durum</div><div></div></div>`;
 }
 
@@ -636,7 +707,7 @@ function confHtml(r) {
 
 function notesHtml(r) {
   const cw = r.hucre_uyarilari || {};
-  const list = [...r.uyarilar, ...Object.entries(cw).map(([k, v]) => (k.startsWith("p") ? `S${+k.slice(1) + 1}: ` : k === "no" ? "No: " : "Ad: ") + v)];
+  const list = [...r.uyarilar, ...Object.entries(cw).map(([k, v]) => (k.startsWith("p") ? `S${qlab(+k.slice(1))}: ` : k === "no" ? "No: " : "Ad: ") + v)];
   const info = r.eslesme_bilgi && !r.onaylandi ? `<div class="info">${esc(r.eslesme_bilgi)}</div>` : "";
   return (list.length && !r.onaylandi) || info
     ? `<div class="notes" data-sync="notes">${r.onaylandi ? "" : list.map((w) => `<div>${esc(w)}</div>`).join("")}${info}</div>`
@@ -647,7 +718,8 @@ function inputs(r, labels) {
   const cw = r.hucre_uyarilari || {};
   return state.exam.tam_puanlar.map((mx, i) => {
     const w = cw[`p${i}`];
-    return `<div class="cell">${labels ? `<span class="ql">S${i + 1} /${fmt(mx)}</span>` : `<span class="ql">S${i + 1}</span>`}<input data-q="${i}" inputmode="decimal" value="${esc(fmt(r.puanlar?.[i]))}" class="${w ? "w" : ""}" title="${esc(w || `S${i + 1} · tam puan ${fmt(mx)}`)}" aria-label="Soru ${i + 1}"></div>`;
+    const q = esc(qlab(i));
+    return `<div class="cell">${labels ? `<span class="ql">S${q} /${fmt(mx)}</span>` : `<span class="ql">S${q}</span>`}<input data-q="${i}" inputmode="decimal" value="${esc(fmt(r.puanlar?.[i]))}" class="${w ? "w" : ""}" title="${esc(w || `S${qlab(i)} · tam puan ${fmt(mx)}`)}" aria-label="Soru ${q}"></div>`;
   }).join("");
 }
 
@@ -934,9 +1006,9 @@ function openReview(id) {
   const kr = r.durum === "tamam" ? (r.kutu_resimleri || {}) : {};
   const cw = r.hucre_uyarilari || {};
   const boxes = Object.keys(kr).length ? `<div class="boxes">${state.exam.tam_puanlar.map((mx, i) => kr[i]
-    ? `<button type="button" class="bx ${cw[`p${i}`] && !r.onaylandi ? "w" : ""}" data-focus-q="${i}" title="${esc(cw[`p${i}`] || `S${i + 1}`)}">
-        <img src="/api/sinavlar/${state.exam.id}/resim/${kr[i]}" alt="S${i + 1} kutusu"><span>S${i + 1} /${fmt(mx)}</span><b data-bx="${i}">${esc(fmt(r.puanlar?.[i])) || "—"}</b></button>`
-    : `<div class="bx none"><span>S${i + 1}</span><b>${esc(fmt(r.puanlar?.[i])) || "—"}</b></div>`).join("")}</div>` : "";
+    ? `<button type="button" class="bx ${cw[`p${i}`] && !r.onaylandi ? "w" : ""}" data-focus-q="${i}" title="${esc(cw[`p${i}`] || `S${qlab(i)}`)}">
+        <img src="/api/sinavlar/${state.exam.id}/resim/${kr[i]}" alt="S${esc(qlab(i))} kutusu"><span>S${esc(qlab(i))} /${fmt(mx)}</span><b data-bx="${i}">${esc(fmt(r.puanlar?.[i])) || "—"}</b></button>`
+    : `<div class="bx none"><span>S${esc(qlab(i))}</span><b>${esc(fmt(r.puanlar?.[i])) || "—"}</b></div>`).join("")}</div>` : "";
   const body = r.durum === "tamam" ? formHtml(r) : `<div class="side"><p class="muted">${isBusy(r) ? "Bu kağıt henüz okunuyor." : esc(r.hata || "")}</p></div>`;
   openModal(`${head(`${esc(name)}${r.ogrenci_no ? ` <span class="muted small">· ${esc(r.ogrenci_no)}</span>` : ""}`)}
     <div class="review"><div class="pic">${boxes}${pics || '<div class="empty">Fotoğraf silinmiş.</div>'}</div>${body}</div>`, { wide: true });
@@ -1075,7 +1147,7 @@ async function templateDialog() {
   const boxes = {};
   (saved?.kutular || []).forEach((b) => (boxes[b.soru] = { ...b }));
   const items = [{ soru: 0, ad: "Ad / numara", opt: true },
-    ...ex.tam_puanlar.map((m, i) => ({ soru: i + 1, ad: `${i + 1}. soru`, alt: `/${fmt(m)}` })),
+    ...ex.tam_puanlar.map((m, i) => ({ soru: i + 1, ad: `S${qlab(i, ex)}`, alt: `/${fmt(m)}` })),
     { soru: -1, ad: "Kağıdın toplamı", opt: true }];
   let page = 0;
   let current = items.find((it) => it.soru > 0 && !boxes[it.soru])?.soru ?? 1;
@@ -1172,7 +1244,7 @@ async function templateDialog() {
       const el = document.createElement("div");
       el.className = "tpl-box" + (b.soru === current ? " on" : "");
       Object.assign(el.style, { left: b.x * 100 + "%", top: b.y * 100 + "%", width: b.w * 100 + "%", height: b.h * 100 + "%" });
-      el.innerHTML = `<span>${b.soru === 0 ? "Ad/No" : b.soru === -1 ? "Toplam" : "S" + b.soru}</span>`;
+      el.innerHTML = `<span>${b.soru === 0 ? "Ad/No" : b.soru === -1 ? "Toplam" : "S" + esc(qlab(b.soru - 1, ex))}</span>`;
       canvas.appendChild(el);
     });
   }
@@ -1222,7 +1294,7 @@ async function templateDialog() {
     catch (err) { toastErr(err); }
   });
   document.getElementById("tpl-save").onclick = async () => {
-    const missing = items.filter((it) => it.soru > 0 && !boxes[it.soru]).map((it) => it.soru);
+    const missing = items.filter((it) => it.soru > 0 && !boxes[it.soru]).map((it) => "S" + qlab(it.soru - 1, ex));
     if (missing.length) return toast(`İşaretlenmemiş soru: ${missing.join(", ")}`, { err: true });
     if (pages.some((p) => !p)) return toast("Her sayfa için bir fotoğraf seçin", { err: true });
     try {

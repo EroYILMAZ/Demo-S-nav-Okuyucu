@@ -33,6 +33,14 @@ for text, want in [("5-)", 5), ("5)", 5), ("5.", 5), ("5- Aşağıdaki", 5), ("S
                    ("1.5 kg", None), ("2-3 arası", None), ("x=1,5.", None), ("7.Mekkeli", 7), ("3 -)", 3)]:
     ok(lab(text) == want, f"etiket {text!r} -> {lab(text)} (beklenen {want})")
 
+# --- eşleştirme: numara yokken sırayla; atlanan hücre cezası (hücre değişkeni ezilince her aday atlanıyordu)
+from app import sorular  # noqa: E402
+S11 = [sorular.parse(x) for x in ["1a", "1b", "1c", "1d", "1e", "2a", "2b", "3", "4", "5", "6"]]
+ok(R._assign_questions([None, "b", "b", None, None, "b", None, None, None, None, None], 11, [None] * 11, S11)
+   == list(range(1, 12)), "yalnızca madde harfleri varken adaylar sırayla bağlanır")
+ok(R._assign_questions([None] * 4, 4, [None] * 4) == [1, 2, 3, 4], "numarasız adaylar sırayla bağlanır")
+ok(R._assign_questions([None] * 4, 5, [1, 2, 4, 5]) == [1, 2, 4, 5], "numaralar boş hücreyi atlatır")
+
 # --- kenarda kesilen puan
 W, H = 1000, 1400
 only = np.full((H, W, 3), 255, np.uint8)
@@ -62,11 +70,13 @@ class FakeLLM:
         pass
 
     def ask(self, prompt, image, schema, side=None, logprobs=True):
-        return FakeAnswer({"student_name": "Ali Veli", "student_number": "12", "class_name": "", "total_score": -1})
+        return FakeAnswer({"name_written": True, "student_name": "Ali Veli", "number_written": True,
+                           "student_number": "12", "class_name": "", "total_score": -1})
 
 
-def run(cands, n, labels, edge=None):
-    """cands: [(y, değer, oylar)] — tek sayfa, tek sütun. labels: {y: basılı numara}."""
+def run(cands, n, labels, edge=None, names=None, maxes=None):
+    """cands: [(y, değer, oylar)] — tek sayfa, tek sütun. labels: {y: basılı numara ya da (numara, madde harfi)}.
+    names: sınavın soru numaraları ("1", "3a"...)."""
     marks = [(100, int(y * H), 80, 60) for y, _v, _o in cands]
     only = np.full((H, W, 3), 255, np.uint8)
     if edge is not None:
@@ -75,7 +85,7 @@ def run(cands, n, labels, edge=None):
     R.load_image = lambda p: Image.new("RGB", (W, H), "white")
     R.page_rotation = lambda im: 0
     R.is_two_column = lambda im: False
-    R.find_score_marks = lambda a: (marks, only)
+    R.find_score_marks = lambda a, an=None, color=None: (marks, only)
     bolme.paper_region = lambda a: np.ones(a.shape[:2], bool)
     R._Ollama = FakeLLM
     R.second_opinion = lambda *a, **k: {}
@@ -86,8 +96,11 @@ def run(cands, n, labels, edge=None):
             out.append({"deger": v, "eminlik": 1.0, "oylar": oylar, "not": "", "kontrol": None})
         return out
     R.read_boxes = fake_read
-    R.printed_label = lambda im, pen, box, n: labels.get(round(box.y * H / H, 2))
-    return R.recognize_auto([Path("x.jpg")], [10] * n, {"yalnizca_renkli_kalem": True}, roster=None)
+    def fake_label(im, pen, box, n):
+        lab = labels.get(round(box.y, 2))
+        return lab if isinstance(lab, tuple) else (lab, None)
+    R.printed_label = fake_label
+    return R.recognize_auto([Path("x.jpg")], maxes or [10] * n, {"yalnizca_renkli_kalem": True}, roster=None, labels=names)
 
 
 def votes(v, plain=None):
@@ -117,12 +130,51 @@ ok(all(r["puanlar"][i] == [7, 5, 8, 6, 9][i] for i in silent),
 # 4) boş soru (puan yok), sıra numaralarla doğrulanmış: yalnızca boş soru kontrole düşer
 r = run([(0.1, 7, votes(7, S)), (0.25, 5, votes(5, S)), (0.55, 6, votes(6, S)), (0.7, 9, votes(9, S))],
         5, {0.1: 1, 0.25: 2, 0.55: 4, 0.7: 5})
-ok(r["puanlar"] == [7, 5, None, 6, 9] and set(r["supheli"]) == {"2"}, f"boş soru: {r['puanlar']} {sorted(r['supheli'])}")
+ok(r["puanlar"] == [7, 5, None, 6, 9] and set(r["supheli"]) == {"2", "3"},
+   f"boş soru: boş hücre ve ardından numarasıyla atlayan hücre kontrole düşer: {r['puanlar']} {sorted(r['supheli'])}")
 
 # 5) kenarda kesilen puan kontrole düşer
 r = run([(0.1, 7, votes(7, S)), (0.25, 5, votes(5, S)), (0.4, 8, votes(8, S)), (0.55, 6, votes(6, S)), (0.7, 9, votes(9, S))],
         5, {0.25: 2, 0.55: 4}, edge=0)
 ok("0" in r["supheli"] and "kenar" in r["supheli"]["0"], f"kenardaki puan: {r['supheli'].get('0')}")
+
+# 6) A/B maddeli sınav (1, 2, 3a, 3b, 4): numaralar ve madde harfleri doğruluyor -> sessiz ve doğru
+five = [(0.1, 7, votes(7, S)), (0.25, 5, votes(5, S)), (0.4, 4, votes(4, S)), (0.55, 3, votes(3, S)), (0.7, 9, votes(9, S))]
+r = run(five, 5, {0.1: 1, 0.25: 2, 0.4: (3, "a"), 0.55: (None, "b"), 0.7: 4}, names=["1", "2", "3a", "3b", "4"])
+ok(r["puanlar"] == [7, 5, 4, 3, 9] and not r["supheli"], f"maddeli sınav: {r['puanlar']} {r['supheli']}")
+
+# 7) aynı kağıt, sınavda maddeler tanımlanmamış (1..5): "4)" 5. puanın yanında -> kayma sessiz kalmaz + numara önerisi
+r = run(five, 5, {0.1: 1, 0.25: 2, 0.4: (3, "a"), 0.55: (None, "b"), 0.7: 4})
+silent = [i for i in range(5) if r["puanlar"][i] is not None and str(i) not in r["supheli"]]
+ok(all(r["puanlar"][i] == [7, 5, 4, 3, 9][i] for i in silent), f"maddeler tanımsız: sessiz yanlış yok {r['puanlar']} sessiz={silent}")
+ok(any("1, 2, 3a, 3b, 4" in w for w in r["uyarilar"]), f"numara önerisi: {r['uyarilar']}")
+
+# 8) 3a boş (puan yok), 3b'nin yanında yalnızca "3)" okunmuş: 3b'nin puanı 3a'ya sessizce yazılmasın
+r = run([(0.1, 7, votes(7, S)), (0.25, 5, votes(5, S)), (0.55, 3, votes(3, S)), (0.7, 9, votes(9, S))], 5,
+        {0.1: 1, 0.25: 2, 0.55: 3, 0.7: 4}, names=["1", "2", "3a", "3b", "4"])
+silent = [i for i in range(5) if r["puanlar"][i] is not None and str(i) not in r["supheli"]]
+ok(all(r["puanlar"][i] == [7, 5, None, 3, 9][i] for i in silent), f"boş 3a: sessiz yanlış yok {r['puanlar']} sessiz={silent}")
+
+# 9) kağıtta 5 atlanmış (1,2,3,4,6,7), sınav 1..6: "6)" 5. puanın yanında, "7)" 6.'nın -> sıra kullanılır, hepsi kontrole
+MX6 = [15, 15, 15, 20, 20, 15]
+six = [(0.1, 13, votes(13, S)), (0.25, 7, votes(7, S)), (0.4, 9, votes(9, S)), (0.55, 16, votes(16, S)),
+       (0.7, 11, votes(11, S)), (0.85, 3, votes(3, S))]
+r = run(six, 6, {0.25: 2, 0.7: 6, 0.85: 7}, maxes=MX6)
+ok(r["puanlar"] == [13, 7, 9, 16, 11, 3] and len(r["supheli"]) == 6 and any("(7)" in w for w in r["uyarilar"]),
+   f"atlanan numara: {r['puanlar']} kontrol={sorted(r['supheli'])} {r['uyarilar']}")
+# ... sınavda numaralar kağıttaki gibi yazılınca sessiz ve doğru
+r = run(six, 6, {0.25: 2, 0.7: 6, 0.85: 7}, names=["1", "2", "3", "4", "6", "7"], maxes=MX6)
+ok(r["puanlar"] == [13, 7, 9, 16, 11, 3] and not r["supheli"], f"numaralar kağıttaki gibi: {r['puanlar']} {r['supheli']}")
+
+# 9b) gerçek kağıt: 5 atlanmış, "·3" puanı okunamamış (aday atıldı), sınav 1..6: "6)" yanındaki 11 sessizce S6'ya yazılmasın
+r = run(six[:5], 6, {0.25: 2, 0.7: 6}, maxes=MX6)
+silent = [i for i in range(6) if r["puanlar"][i] is not None and str(i) not in r["supheli"]]
+ok(all(r["puanlar"][i] == [13, 7, 9, 16, 11, 3][i] for i in silent), f"atlanan numara + kayıp puan: {r['puanlar']} sessiz={silent}")
+
+# 10) başlık: isim/numara yazılmamış -> boş; sınıf numaraya karışmaz; numara alanına okunan puan yakalanır
+h = R.clean_header({"name_written": False, "student_name": "Ayşe Yılmaz", "number_written": True, "student_number": "8/C 368"})
+ok(h["student_name"] == "" and h["student_number"] == "368", f"başlık temizliği: {h}")
+ok(R.number_is_score("13", [13.0, 7.0]) and not R.number_is_score("368", [13.0]), "numara bir puanla aynıysa yakalanır")
 
 print("\nBAŞARISIZ:", fails)
 sys.exit(1 if fails else 0)

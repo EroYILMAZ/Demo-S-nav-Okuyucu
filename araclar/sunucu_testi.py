@@ -48,6 +48,68 @@ ex = c.post("/api/sinavlar", json={"sinif": "10-C", "ders": "Mat", "ad": "T", "t
 eid = ex["id"]
 ok(ex["sayfa_sayisi"] == 2, "sayfa sayısı kaydedildi")
 
+print("Soru numaraları (A/B maddeleri, atlanan numara)")
+exm = c.post("/api/sinavlar", json={"sinif": "M", "tam_puanlar": [10, 20, 8, 7, 15],
+                                    "soru_adlari": ["1", "2", "3-A", "3 b)", "4"]}).json()
+ok(exm["soru_adlari"] == ["1", "2", "3a", "3b", "4"], f"maddeli numaralar kaydedildi: {exm.get('soru_adlari')}")
+for bad, why in ((["1", "2", "3", "3a", "4"], "bölünmemiş + maddeli"), (["1", "3", "2", "4", "5"], "sıra bozuk"),
+                 (["1", "2", "x", "4", "5"], "geçersiz"), (["1", "2"], "sayı tutmuyor")):
+    ok(c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [10] * 5, "soru_adlari": bad}).status_code == 400,
+       f"geçersiz numaralar reddedildi ({why})")
+c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [10] * 5, "soru_adlari": ["1", "2", "3", "4", "6"]}).raise_for_status()
+ok(c.get(f"/api/sinavlar/{exm['id']}").json()["soru_adlari"] == ["1", "2", "3", "4", "6"], "atlanan numara kaydedildi")
+c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [10] * 5, "soru_adlari": ["1", "2", "3", "4", "5"]}).raise_for_status()
+ok(c.get(f"/api/sinavlar/{exm['id']}").json()["soru_adlari"] == [], "varsayılan numaralar ayrıca saklanmaz")
+c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [10] * 5, "soru_adlari": ["1", "2", "3a", "3b", "4"]}).raise_for_status()
+import openpyxl  # noqa: E402
+wb = openpyxl.load_workbook(io.BytesIO(c.get(f"/api/sinavlar/{exm['id']}/excel").content))
+heads = [cell.value for cell in wb.active[4]]
+ok("S3a (10)" in heads and "S3b (10)" in heads and "S4 (10)" in heads, f"Excel başlıkları maddeli: {heads[3:8]}")
+
+print("Soru bölününce/birleşince okunmuş puanlar ve şablon kutuları numarasına göre taşınıyor")
+
+
+def put_record(eid_, puanlar, kutular=None):
+    def fn(e):
+        e["kayitlar"].append({"id": "kayit-madde", "durum": "tamam", "puanlar": list(puanlar), "supheli": {},
+                              "onaylandi": True, "ogrenci_no": "5", "ad_soyad": "Ali Veli", "resimler": [],
+                              "kutu_resimleri": {}})
+        if kutular:
+            e["sablon"] = {"sayfalar": ["yok.jpg"], "kutular": kutular}
+    main.store.update_exam(eid_, fn)
+
+
+def rec(eid_):
+    e = c.get(f"/api/sinavlar/{eid_}").json()
+    return next(x for x in e["kayitlar"] if x["id"] == "kayit-madde"), e
+
+
+box = lambda q, y: {"soru": q, "sayfa": 0, "x": 0.1, "y": y, "w": 0.1, "h": 0.05}  # noqa: E731
+# birleştirme: 1, 2, 3a, 3b, 4 → 1, 2, 3, 4 (3b'de ×)
+put_record(exm["id"], [11, 12, 7, 8, 15], [box(0, 0.02), box(1, 0.1), box(2, 0.2), box(3, 0.3), box(4, 0.4), box(5, 0.5)])
+c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [20, 20, 20, 40], "soru_adlari": ["1", "2", "3", "4"]}).raise_for_status()
+r, e = rec(exm["id"])
+ok(r["puanlar"] == [11, 12, 15, 15], f"birleştirmede maddeler toplanır, 4. soru yerinde kalır: {r['puanlar']}")
+ok(not r["onaylandi"], "sorular değişince onay kalkar")
+ks = {b["soru"]: b["y"] for b in e["sablon"]["kutular"]}
+ok(ks == {0: 0.02, 1: 0.1, 2: 0.2, 4: 0.5}, f"birleşen sorunun kutusu atıldı, 4. sorunun kutusu taşındı: {ks}")
+# bölme: 1, 2, 3, 4 → 1, 2, 3a, 3b, 4
+c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [20, 20, 10, 10, 40], "soru_adlari": ["1", "2", "3a", "3b", "4"]}).raise_for_status()
+r, e = rec(exm["id"])
+ok(r["puanlar"] == [11, 12, None, None, 15], f"bölmede maddeler boş kalır, 4. soru yerinde: {r['puanlar']}")
+ok("p2" in r["hucre_uyarilari"] and "15" in r["hucre_uyarilari"]["p2"], f"bölünen maddede eski puan notu: {r['hucre_uyarilari']}")
+ks = {b["soru"]: b["y"] for b in e["sablon"]["kutular"]}
+ok(ks == {0: 0.02, 1: 0.1, 2: 0.2, 5: 0.5}, f"bölünen sorunun kutusu atıldı, 4. sorunun kutusu S4'te: {ks}")
+# yalnızca numara değişti (5 atlanmış kağıt): sırayla kalır
+c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [20, 20, 10, 10, 40], "soru_adlari": ["1", "2", "3a", "3b", "5"]}).raise_for_status()
+r, e = rec(exm["id"])
+ok(r["puanlar"] == [11, 12, None, None, 15], f"numara değişikliğinde puanlar yerinde: {r['puanlar']}")
+# sona soru eklemek eskisi gibi
+c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [20, 20, 10, 10, 40, 10], "soru_adlari": ["1", "2", "3a", "3b", "5", "6"]}).raise_for_status()
+r, e = rec(exm["id"])
+ok(r["puanlar"] == [11, 12, None, None, 15, None], f"sona eklenen soru boş: {r['puanlar']}")
+c.delete(f"/api/sinavlar/{exm['id']}")
+
 print("Sınıf listesi kütüphanesi")
 c.post(f"/api/sinavlar/{eid}/liste", data={"metin": "1\t247\tDeniz\tKaya\n2\t412\tAyşe\tDemir"}).raise_for_status()
 ex2 = c.post("/api/sinavlar", json={"sinif": "10/c", "ders": "Fizik", "tam_puanlar": [10]}).json()
@@ -335,6 +397,10 @@ ok(kept(300) > 300 and kept(600) > 300, "mavi ve kırmızı mürekkep kaldı")
 ok(kept(900) == 0 and kept(1200) == 0, "kurşun kalem ve siyah iz silindi")
 ok(c.put("/api/ayarlar", json={"yalnizca_renkli_kalem": False}).json()["yalnizca_renkli_kalem"] is False, "süzgeç ayarı kapatılabiliyor")
 ok(c.put("/api/ayarlar", json={"yalnizca_renkli_kalem": True}).json()["yalnizca_renkli_kalem"] is True, "süzgeç ayarı açılabiliyor")
+ok(c.put("/api/ayarlar", json={"ogretmen_kalem_rengi": "kirmizi"}).json()["ogretmen_kalem_rengi"] == "kirmizi", "kalem rengi seçilebiliyor")
+ok(c.put("/api/ayarlar", json={"ogretmen_kalem_rengi": "mor-ötesi"}).json()["ogretmen_kalem_rengi"] == "kirmizi",
+   "geçersiz kalem rengi yok sayıldı")
+c.put("/api/ayarlar", json={"ogretmen_kalem_rengi": "otomatik"})
 
 print("Eşleştirme (ağdaki cihazlar)")
 main.AUTH_DISABLED = False

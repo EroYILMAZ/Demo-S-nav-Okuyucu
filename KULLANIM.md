@@ -19,6 +19,8 @@ Fotoğraflar yalnızca telefondan bilgisayara, ev/okul Wi-Fi'si içinden gider; 
    ana sayfadaki “bağlantıları kes” ile bütün telefonların bağlantısı kesilebilir.
 4. **Sınav oluşturun:** Sınıf, ders, soru sayısı, her sorunun tam puanı ve **bir kağıdın kaç sayfa olduğu**.
    Sayfa sayısı doğruysa fotoğraflar sırayla aynı öğrenciye bağlanır (2 sayfa → her 2 fotoğraf bir öğrenci); “Sayfa ekle” gerekmez.
+   Soru A ve B maddelerine ayrılmışsa ve her maddeye ayrı puan veriyorsanız o sorunun altındaki **a/b** düğmesine basın
+   (bkz. “A/B maddeli sorular ve farklı numaralar”).
 5. **Sınıf listesi (bir kez):** “Sınıf listesi”ne e-Okul ya da Excel'den kopyaladığınız listeyi yapıştırın. Liste o sınıf için hatırlanır;
    aynı sınıfın sonraki sınavlarına kendiliğinden eklenir. El yazısı ad/numara hataları düzelir, kağıdı gelmeyen öğrenciler görünür.
 6. **Şablonu işaretleyin (en doğru okuma, bir kez ~1 dakika):** Sınav sayfasında **Şablon**'a basın. Bir kağıdın fotoğrafında
@@ -95,6 +97,28 @@ sonradan yazılan bir rakam (ör. öğretmenin “5”inin önüne eklenen bir �
   Eski okuma dört bakıştan birinde “15” okudu; yeni okuma dördünde de “5” okudu. Süzgeçle gerçek kağıt
   20 kutudan 20'sini doğru okudu (süzgeçsiz 19/20 idi).
 
+## A/B maddeli sorular ve farklı numaralar
+Sınav penceresinde her puan sütununun üstünde kağıttaki soru numarası yazar (S1, S2…):
+- **Maddeli soru:** Öğretmen 3. sorunun A ve B maddelerine ayrı puan veriyorsa 3. sorunun altındaki **a/b** düğmesine basın:
+  sütun **3a** ve **3b** olur, tam puanları ayrı girilir (C maddesi için **+**, geri almak için **×**). Excel'de her madde ayrı
+  sütundur. Öğretmen maddeli bir soruya tek puan veriyorsa soruyu bölmeyin.
+- **Farklı numara:** Kağıtta bir numara atlanmışsa (1, 2, 3, 4, 6, 7) numaraya tıklayıp kağıttaki gibi yazın.
+- Kağıtlar okunduktan sonra soruları bölerseniz ya da birleştirirseniz okunmuş puanlar **soru numarasına göre** taşınır:
+  birleştirilen maddelerin puanları toplanır; bölünen sorunun maddeleri ve yeni sorular boş kalıp kontrole düşer (eski puan
+  notta yazar). Şablon kullanıyorsanız değişen soruların kutusunu yeniden çizin (program “kutu yok” diye uyarır).
+- Neden önemli: Şablonsuz okumada her puan, yanındaki **basılı soru numarasıyla** (“4)”, “B.”) doğrulanır. Numaralar kağıttakiyle
+  uyuşmazsa (ör. maddeli kağıtta “4)” aslında 5. sütundur) program puanları kaydırmaz: uyuşmazlığı bulur, hücreleri kontrole düşürür
+  ve kağıtta okuduğu numaraları önerir (“Kağıttaki soru numaraları 1, 2, 3a, 3b … gibi görünüyor”).
+
+## Öğrenciler de renkli kalem kullanıyorsa
+Süzgeç bütün renkli tükenmez izlerini bırakır. Öğrenciler mavi tükenmezle, siz kırmızıyla yazıyorsanız **Ayarlar → Öğretmenin
+puan kalemi rengi**'nden rengi seçin (Kırmızı / Mavi / Yeşil): yalnızca o renk okunur, öğrencinin yazısı puan sanılmaz.
+“Otomatik”te program bütün renkleri okur; sayfa çok kalabalıksa (soru sayısının üç katından çok renkli işaret) ve tek bir renk
+soru sayısına uyuyorsa o rengi seçer ve satırı kontrole düşürür. Öğrenciyle aynı renk kalem kullanıyorsanız renkler ayrılamaz:
+fazladan okunan işaretler yüzünden kağıtlar kontrole düşer, puanlar sessizce yanlış yazılmaz.
+Renkli basılı öğeler (pembe soru çerçeveleri, renkli şekiller, logolar) puan sanılmaz: uzun düz renkli çizgiler ayıklanır,
+geri kalanları model “sayı yok” diye eler.
+
 ## Bir fotoğrafta birden çok kağıt
 Sınav sayfasındaki **Fotoğrafta 1 · 2 · 4 kağıt** seçimi o sınav için hatırlanır; telefonun seri çekimi ve galeri de bunu kullanır.
 - 2 kağıt: yan yana. 4 kağıt: 2×2 (iki üstte, iki altta). Aralarında biraz boşluk bırakın; koyu bir masa en iyisidir.
@@ -119,6 +143,8 @@ nedeni satırın altında ve hücrenin üzerine gelince yazar:
 - **Puan bulunamadı**, **tam puandan büyük**, **hangi soruya ait olduğu belirsiz**, **renkli kalemde görülmedi**.
 - **Kağıttaki toplam** okunan puanların toplamıyla tutmuyor.
 - **Öğrenci:** numara okunamadı, listede yok, iki kağıtta aynı numara, numara ile isim çelişiyor ya da öğrenci listeden tahmin edildi.
+  Kağıtta ad ve numara yazılmamışsa alanlar boş kalır ve kontrole düşer: program isim uydurmaz, sınıf listesinden de tahmin
+  etmez; başlığın yanındaki bir puanı (ör. 1. sorunun puanı) numara sanmaz.
 - Sayfa eksik ya da fotoğraf şablona oturtulamadı; puan kutusu fotoğrafın dışında kalıyor (kağıt kırpılmış çekilmiş).
 - Şablonsuz okumada puanın hangi soruya ait olduğu basılı soru numarasıyla doğrulanamadı, ya da kağıtta sorusu
   belirlenemeyen fazladan bir puan var. Puanlar bütün sayfadan okunduysa (renkli puan bulunamadı) her hücre işaretlenir.

@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
-from . import config, store
+from . import config, sorular, store
 from .bolme import split_sheets
 from .excel import build_workbook
 from .matching import annotate as _annotate_raw, parse_roster_file, parse_roster_text, record_warnings, resolve_student
@@ -242,7 +242,7 @@ def _process(exam_id: str, rec_id: str) -> None:
                                          progress, roster=exam["ogrenci_listesi"])
         else:
             result = recognize_auto(images, exam["tam_puanlar"], settings, progress, layout=exam.get("duzen"),
-                                    roster=exam["ogrenci_listesi"])
+                                    roster=exam["ogrenci_listesi"], labels=sorular.labels_of(exam))
     except EngineError as e:
         _engine_wait(exam_id, rec_id, e)
         return
@@ -316,6 +316,9 @@ def _identify(exam_id: str, rec_id: str) -> None:
     images = [store.image_dir(exam_id) / n for n in rec.get("resimler") or []]
     if rec.get("durum") != "tamam" or not roster or not images or not images[0].exists() or rec.get("onaylandi"):
         return
+    o0 = rec.get("okunan") or {}
+    if not o0.get("ogrenci_no") and not str(o0.get("ad_soyad") or "").strip():
+        return  # kağıtta ne isim ne numara var: listeden seçmek tahmin olurdu
     _current.update(exam=exam_id, kayit=rec_id, baslangic=time.time())
     tpl = exam.get("sablon") or {}
     tpl_pages = [store.image_dir(exam_id) / n for n in tpl.get("sayfalar", [])]
@@ -425,6 +428,7 @@ def _summary(exam: dict) -> dict:
     return {
         k: exam[k] for k in ("id", "ad", "sinif", "ders", "olusturma", "tam_puanlar")
     } | {
+        "soru_adlari": sorular.labels_of(exam),
         "sayfa_sayisi": exam.get("sayfa_sayisi", 1),
         "kagit_sayisi": len(recs),
         "bekleyen": sum(r["durum"] in ("bekliyor", "isleniyor") for r in recs),
@@ -596,6 +600,7 @@ class SettingsIn(BaseModel):
     ollama_gpu: str | None = None
     yalnizca_renkli_kalem: bool | None = None
     ikinci_model: str | None = None
+    ogretmen_kalem_rengi: str | None = None
 
 
 @app.put("/api/ayarlar")
@@ -616,6 +621,7 @@ class ExamIn(BaseModel):
     sinif: str = ""
     ders: str = ""
     tam_puanlar: list[float]
+    soru_adlari: list[str] = []  # kağıttaki soru numaraları ("1", "2", "3a", "3b"...); boşsa 1..n
     sayfa_sayisi: int = 1
     sablon_kaynak: str = ""  # başka şubeye kopyalarken şablonu bu sınavdan al
 
@@ -626,6 +632,17 @@ def _check_maxes(body: ExamIn) -> None:
         raise HTTPException(400, "Soru sayısı 1-50 arası, tam puanlar sıfırdan büyük olmalı")
     if not 1 <= body.sayfa_sayisi <= 8:
         raise HTTPException(400, "Kağıt 1-8 sayfa olabilir")
+    if body.soru_adlari:
+        if len(body.soru_adlari) != len(maxes):
+            raise HTTPException(400, "Soru numaralarının sayısı soru sayısıyla aynı olmalı")
+        err = sorular.check(body.soru_adlari)
+        if err:
+            raise HTTPException(400, err)
+
+
+def _labels_in(body: ExamIn) -> list[str]:
+    names = [sorular.normalize(x) for x in body.soru_adlari]
+    return [] if not names or names == sorular.defaults(len(names)) else names
 
 
 @app.get("/api/sinavlar")
@@ -642,7 +659,8 @@ def siniflar():
 @app.post("/api/sinavlar")
 def sinav_olustur(body: ExamIn):
     _check_maxes(body)
-    exam = store.create_exam(body.ad.strip(), body.sinif.strip(), body.ders.strip(), body.tam_puanlar, body.sayfa_sayisi)
+    exam = store.create_exam(body.ad.strip(), body.sinif.strip(), body.ders.strip(), body.tam_puanlar, body.sayfa_sayisi,
+                             _labels_in(body))
     if body.sablon_kaynak:
         try:
             src = store.get_exam(body.sablon_kaynak)
@@ -676,44 +694,102 @@ def sinav_guncelle(exam_id: str, body: ExamIn):
     queued: list[str] = []
     recheck: list[str] = []
 
+    dropped_images: list[str] = []
+
     def fn(e):
         old_n = len(e["tam_puanlar"])
         old_maxes = list(e["tam_puanlar"])
         old_pages = int(e.get("sayfa_sayisi", 1))
+        old_labels = sorular.labels_of(e)
         e.update(ad=body.ad.strip(), sinif=body.sinif.strip(), ders=body.ders.strip(), tam_puanlar=body.tam_puanlar,
-                 sayfa_sayisi=body.sayfa_sayisi)
+                 sayfa_sayisi=body.sayfa_sayisi, soru_adlari=_labels_in(body))
+        plan = sorular.remap(old_labels, sorular.labels_of(e))
+        moved = plan != [("ayni", [i]) for i in range(old_n)]
         if not e["ogrenci_listesi"]:
             e["ogrenci_listesi"] = store.get_class_roster(e["sinif"])
             if e["ogrenci_listesi"]:
                 _rematch_roster(e, recheck)  # liste kendiliğinden geldi: okunmuş kağıtları da ona göre eşleştir
         n = len(body.tam_puanlar)
-        if n != old_n or list(body.tam_puanlar) != old_maxes:
-            # onay eski soru sayısı / tam puanlar için verilmişti: yeni boş soru ya da artık tam puanı aşan bir puan
+        if moved:
+            _remap_cells(e, plan, old_labels, dropped_images)
+        if moved or list(body.tam_puanlar) != old_maxes:
+            # onay eski sorular / tam puanlar için verilmişti: yeni boş soru ya da artık tam puanı aşan bir puan
             # "onaylandı" diye uyarısız dışa aktarılmasın
             for r in e["kayitlar"]:
                 p = r.get("puanlar") or []
-                if r.get("onaylandi") and (n != old_n or any(
+                if r.get("onaylandi") and (moved or any(
                         i < len(p) and p[i] is not None and p[i] > body.tam_puanlar[i] for i in range(n))):
                     r["onaylandi"] = False
-        if n != old_n:
-            for r in e["kayitlar"]:
-                r["puanlar"] = (list(r.get("puanlar") or []) + [None] * n)[:n]
-                if r.get("eminlik_puan"):
-                    r["eminlik_puan"] = (list(r["eminlik_puan"]) + [0.0] * n)[:n]
-                for key in ("supheli", "eminlik_alt"):
-                    r[key] = {k: v for k, v in (r.get(key) or {}).items() if int(k) < n}
-            tpl = e.get("sablon") or {}
-            if tpl.get("kutular"):  # artık olmayan soruların kutularını at
-                tpl["kutular"] = [b for b in tpl["kutular"] if int(b["soru"]) <= n]
         if body.sayfa_sayisi != old_pages:
             # sayfa sayısı değişti: açık seri çekim oturumundaki yarım kağıt, yeni öğrencinin sayfalarıyla birleşmesin
             _close_open_sessions(e, queued)
     exam = store.update_exam(exam_id, fn)
+    for name in dropped_images:
+        store.unlink(store.image_dir(exam_id) / name)
     for rid in queued:
         _jobs.put((exam_id, rid))
     for rid in recheck:
         _jobs.put((exam_id, rid, "kimlik"))
     return annotate(exam)
+
+
+def _remap_cells(e: dict, plan: list, old_labels: list[str], dropped_images: list[str]) -> None:
+    """Soru hücreleri değişince (bölme, birleştirme, ekleme, silme) okunmuş puanları ve şablon kutularını kağıttaki soru
+    numarasına göre taşır (bkz. sorular.remap). Birleşen maddelerin puanları toplanır; bölünen sorunun maddeleri boş kalır
+    ve kontrole düşer (eski puan notta yazar); karşılığı değişen hücrenin şablon kutusu atılır ("kutu yok" uyarısı çıkar,
+    öğretmen yeniden çizer). Konuma göre taşımak, ortadaki bir bölmeden sonra puanları uyarısız bir sütun kaydırıyordu."""
+    def fmt(v):
+        return "boş" if v is None else f"{v:g}"
+
+    for r in e["kayitlar"]:
+        p_old = list(r.get("puanlar") or [])
+        conf_old = list(r.get("eminlik_puan") or [])
+        sup_old = r.get("supheli") or {}
+        alt_old = r.get("eminlik_alt") or {}
+        box_old = r.get("kutu_resimleri") or {}
+        p_new, conf_new, sup_new, alt_new, box_new = [], [], {}, {}, {}
+        for j, (kind, src) in enumerate(plan):
+            vals = [p_old[i] if i < len(p_old) else None for i in src]
+            if kind == "ayni":
+                i = src[0]
+                p_new.append(vals[0])
+                conf_new.append(conf_old[i] if i < len(conf_old) else 0.0)
+                for old, new in ((sup_old, sup_new), (alt_old, alt_new), (box_old, box_new)):
+                    if str(i) in old:
+                        new[str(j)] = old[str(i)]
+                continue
+            conf_new.append(0.0)
+            if kind == "toplam":
+                p_new.append(None if None in vals else sum(vals))
+                notes = [sup_old[str(i)] for i in src if str(i) in sup_old]
+                if notes or None in vals:
+                    sup_new[str(j)] = "; ".join(notes + [
+                        "Maddeler birleştirildi (" + ", ".join(f"{old_labels[i]}: {fmt(v)}" for i, v in zip(src, vals)) + ")"])
+            elif kind == "bolundu":
+                p_new.append(None)
+                if vals[0] is not None:
+                    sup_new[str(j)] = (f"Soru maddelere bölündü (eski {old_labels[src[0]]}. soru puanı: {fmt(vals[0])}); "
+                                       "bu maddenin puanını girin ya da kağıdı yeniden okutun")
+            else:
+                p_new.append(None)
+        kept = set(box_new.values())
+        dropped_images.extend(name for name in box_old.values() if name not in kept)
+        r["puanlar"] = p_new
+        if r.get("eminlik_puan"):
+            r["eminlik_puan"] = conf_new
+        r["supheli"], r["eminlik_alt"], r["kutu_resimleri"] = sup_new, alt_new, box_new
+    tpl = e.get("sablon") or {}
+    if tpl.get("kutular"):
+        # aynı kalan hücrelerin kutuları yeni numarasıyla; ad/numara (0) ve toplam (-1) kutuları olduğu gibi
+        where = {src[0] + 1: j + 1 for j, (kind, src) in enumerate(plan) if kind == "ayni"}
+        boxes = []
+        for b in tpl["kutular"]:
+            q = int(b["soru"])
+            if q <= 0:
+                boxes.append(b)
+            elif q in where:
+                boxes.append({**b, "soru": where[q]})
+        tpl["kutular"] = boxes
 
 
 @app.delete("/api/sinavlar/{exam_id}")
