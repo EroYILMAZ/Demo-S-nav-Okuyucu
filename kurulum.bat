@@ -36,15 +36,15 @@ if not exist "%OLLAMA%" (
   exit /b 1
 )
 
-echo [3/4] Okuma modelleri indiriliyor (yaklasik 9 GB, ilk seferde biraz surer)...
+echo [3/4] Okuma modelleri indiriliyor (yaklasik 10 GB, ilk seferde biraz surer)...
 tasklist /fi "imagename eq ollama.exe" | find /i "ollama.exe" >nul
 if errorlevel 1 (
   start "Ollama" /min "%OLLAMA%" serve
   timeout /t 4 /nobreak >nul
 )
-"%OLLAMA%" pull qwen3-vl:8b-instruct
+"%OLLAMA%" pull qwen3.5:9b
 if errorlevel 1 goto hata
-"%OLLAMA%" pull qwen3-vl:4b-instruct
+"%OLLAMA%" pull qwen3.5:4b
 if errorlevel 1 goto hata
 
 echo [4/4] Program derlenip kuruluyor...

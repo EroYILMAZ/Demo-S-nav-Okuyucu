@@ -51,10 +51,34 @@ def _bundled_models() -> Path | None:
     return p if (p / "manifests").exists() else None
 
 
+# Okuma modelleri, doğruluk sırasıyla (gerçek kağıtlardaki 44 puan kırpımında, tek bakışta: qwen3.5:9b 44/44,
+# qwen3-vl:8b 40/44). Küçük bellekli bilgisayarlar için küçük modeller ayrı.
+BIG_MODELS = ["qwen3.5:9b", "qwen3-vl:8b-instruct"]
+SMALL_MODELS = ["qwen3.5:4b", "qwen3-vl:4b-instruct"]
+OLD_DEFAULTS = {"qwen3-vl:8b-instruct"}
+
+
+def _models_dir() -> Path:
+    return _bundled_models() or Path(os.environ.get("OLLAMA_MODELS") or Path.home() / ".ollama" / "models")
+
+
+def _installed(name: str) -> bool:
+    repo, _, tag = name.partition(":")
+    return (_models_dir() / "manifests" / "registry.ollama.ai" / "library" / repo / (tag or "latest")).exists()
+
+
 def _choose_model_for_this_pc(log) -> None:
-    """İlk açılışta: bellek azsa (12 GB altı) 8B model sığmayabilir; varsa 4B modele geç."""
+    """İlk açılışta: bellek azsa (12 GB altı) büyük model sığmayabilir, küçük modele geç; varsayılan model yüklü değilse
+    yüklü olan en doğru modeli seç. Eski varsayılanı (qwen3-vl:8b) kullananlar, daha doğru okuyan yeni varsayılan
+    yüklüyse bir kez ona geçirilir; öğretmen sonra eskisini seçerse bir daha dokunulmaz."""
     if config.SETTINGS_FILE.exists():
-        return  # öğretmen ayarları daha önce kaydedildi; dokunma
+        mark = config.DATA_DIR / "model_gecisi_qwen35"
+        new = config.DEFAULTS["model"]
+        if not mark.exists() and config.load_settings().get("model") in OLD_DEFAULTS and _installed(new):
+            config.save_settings({"model": new})
+            mark.touch()
+            print(f"Okuma modeli {new} oldu (daha doğru okuyor).", file=log)
+        return  # öğretmen ayarları daha önce kaydedildi; başka bir şeye dokunma
     try:
         import ctypes
 
@@ -68,12 +92,12 @@ def _choose_model_for_this_pc(log) -> None:
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
         total_gb = st.ullTotalPhys / 1024 ** 3
     except Exception:
-        return
-    models = _bundled_models() or Path.home() / ".ollama" / "models"
-    has_4b = (models / "manifests" / "registry.ollama.ai" / "library" / "qwen3-vl" / "4b-instruct").exists()
-    if total_gb < 12 and has_4b:
-        config.save_settings({"model": "qwen3-vl:4b-instruct"})
-        print(f"Bellek {total_gb:.1f} GB: 4B model seçildi.", file=log)
+        total_gb = None
+    small = total_gb is not None and total_gb < 12
+    pick = next((m for m in (SMALL_MODELS + BIG_MODELS if small else BIG_MODELS + SMALL_MODELS) if _installed(m)), None)
+    if pick and pick != config.DEFAULTS["model"]:
+        config.save_settings({"model": pick})
+        print(f"Bellek {total_gb or 0:.1f} GB: {pick} modeli seçildi.", file=log)
 
 
 def _gpu_env(mode: str) -> dict:

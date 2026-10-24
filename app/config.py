@@ -14,8 +14,9 @@ SETTINGS_FILE = DATA_DIR / "ayarlar.json"
 DEFAULTS = {
     # Ollama yerel sunucusu (bilgisayar dışına veri çıkmaz)
     "ollama_url": "http://127.0.0.1:11434",
-    # Görüntü okuyabilen yerel model. Gerçek kağıt denemesinde 8b 10/10, 4b 9/10 doğru okudu.
-    "model": "qwen3-vl:8b-instruct",
+    # Görüntü okuyabilen yerel model. Gerçek kağıtlardaki 44 puan kırpımında (tek bakış) qwen3.5:9b 44/44,
+    # qwen3-vl:8b-instruct 40/44, minicpm-v:8b 39/44, qwen3-vl:4b-instruct 32/44 doğru okudu.
+    "model": "qwen3.5:9b",
     # Modele gönderilen her parçanın (sayfa/sütun) uzun kenarı (piksel). Büyüdükçe doğruluk artar, hız düşer.
     "max_kenar": 1400,
     # Tek bir model çağrısı için zaman aşımı (saniye). Ekran kartı zayıfsa artırın.

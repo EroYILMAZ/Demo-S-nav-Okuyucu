@@ -62,7 +62,7 @@ Yapay zekâ modeli dahil tek parça paket oluşturun (internet gerekmez):
 powershell -ExecutionPolicy Bypass -File araclar\paket_olustur.ps1
 ```
 
-Paket `%USERPROFILE%\SinavOkuyucu-Paket` klasöründe oluşur (~12 GB: program + Ollama + 8B ve 4B modeller).
+Paket `%USERPROFILE%\SinavOkuyucu-Paket` klasöründe oluşur (~12 GB: program + Ollama + qwen3.5 9B ve 4B modeller).
 USB bellek ya da harici diskle taşıyın; alan kişi **KUR.bat**'a çift tıklar, o kadar. Belleği 12 GB'tan az bilgisayarlarda
 program kendiliğinden 4B modele geçer. Öğrenci verileri pakete girmez (veriler `%LOCALAPPDATA%\SinavOkuyucu` altındadır).
 
@@ -79,7 +79,10 @@ Bilgisayar programının penceresini kapatınca okuma da durur. Kağıt okuturke
 - Puanları sorunun yanına (sağ boşluğa) ya da üstteki puan tablosuna net yazın. Toplamı da yazarsanız uygulama kontrol eder.
 - **Kağıdın toplamını yazın** (ör. sağ üstte çember içinde): Okunan puanların toplamı tutmazsa uygulama kağıdı otomatik olarak yeniden okur ve hatayı çoğu zaman kendisi düzeltir.
 - Yanlış okuma çoksa: ⚙ Ayarlar → "Fotoğraf çözünürlüğü" değerini 1800'e çıkarın (daha yavaş, daha doğru).
-- Varsayılan model `qwen3-vl:8b-instruct` (en doğru). Daha hızlı ama daha çok hata yapan okuma için ⚙ Ayarlar'dan `qwen3-vl:4b-instruct` seçebilirsiniz.
+- Varsayılan model `qwen3.5:9b` (en doğru). Gerçek kağıtlardaki 44 puanın kırpımında, tek bakışta: qwen3.5:9b 44/44,
+  qwen3-vl:8b-instruct (eski varsayılan) 40/44, qwen3.5:4b 39/44, minicpm-v:8b 39/44, gemma4:e4b 37/44, qwen3-vl:4b-instruct 32/44.
+  Eski varsayılanı kullanan program, qwen3.5:9b yüklüyse açılışta bir kez ona geçer. Daha hızlı ama daha çok hata yapan
+  okuma için ⚙ Ayarlar'dan `qwen3.5:4b` seçebilirsiniz.
 
 ## Kurşun kalem neden okunmuyor?
 Puanlar ve kağıdın toplamı **yalnızca renkli tükenmez kalemden** (mavi, kırmızı, yeşil, mor) okunur. Kurşun kalemle
@@ -188,10 +191,11 @@ Sınıf listesi varsa, numara ve isim listeyle karşılaştırılır:
 5. Ad ve numara sayfanın üst kısmından okunur; sınıf listesi varsa onunla eşleştirilir.
 
 Gerçek bir 10-C matematik kağıdında (2 sayfa, iki sütun, çok karalama, kağıdın üstünde el) ilk sürüm şablonsuz 10 sorudan 5'ini
-buluyordu; şimdiki sürüm şablonla da şablonsuz da 10'unu doğru okuyor. Gerçek kağıt testi (5 kağıt, 39 puan: A/B maddeli,
-isimsiz, 5'i atlanmış numaralı, Din, 2 sayfalık) 39/39; şablonlu test 20/20. İnternetten indirilen boş sınav kağıtlarına gerçek
-öğretmen puanları yapıştırılarak üretilen zorlayıcı sette (sıkışık a-e maddeleri, renkli basılı öğeler) daha düşük; oradaki
-yanlışların hepsi kontrole düşüyor.
+buluyordu; şimdiki sürüm şablonla da şablonsuz da 10'unu doğru okuyor. Gerçek kağıt testi (6 kağıt, 46 puan: A/B maddeli,
+isimsiz, 5'i atlanmış numaralı, Din, 2 sayfalık, daireleri birbirine değen) qwen3.5:9b ile 46/46; şablonlu test 20/20.
+İnternetten indirilen boş sınav kağıtlarına gerçek öğretmen puanları yapıştırılarak üretilen zorlayıcı sette (sıkışık a-e
+maddeleri, renkli basılı öğeler) 35/44 (eski modelle 26/44); oradaki yanlışların hepsi kontrole düşüyor. Hiçbir test
+"hatasız" demek değildir: kontrole düşen hücrelere mutlaka bakın.
 **İkinci model (isteğe bağlı):** ⚙ Ayarlar → “Çapraz kontrol modeli”. Varsayılan kapalı; denenen minicpm-v:8b Türkçe el yazısında
 ana modelden zayıf çıktı ve doğru okunan puanların bir kısmını gereksiz yere kontrole düşürdü.
 

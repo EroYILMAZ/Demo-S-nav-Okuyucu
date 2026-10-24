@@ -87,7 +87,11 @@ A circled number in colored pen is the teacher's score for a question, not the s
 Read the name letter by letter (Turkish letters ç ğ ı İ ö ş ü). student_number: only the digits of the school number
 (usually 1-5 digits), never the class (like "8/C") or the date.
 total_score: the overall score the teacher wrote for the whole paper (near "Puan"/"Toplam", often circled).
-If no total score is written, use -1. Do not compute it yourself."""
+If no total score is written, use -1. Do not compute it yourself.
+Copy the handwritten letters exactly as they look, even if the result is not a real or common name: never replace them
+with a similar-looking known name."""
+# (son cümle: qwen3.5 karışık el yazısını gerçek bir isme çeviriyordu, "Erla Acslan" -> "Erol Acar"; harf harf okuma
+# öğretmene ismin belirsiz olduğunu gösterir, öğrenci numarayla eşleşir)
 
 # Alanların sırası önemli: model, ismi yazmadan önce kağıtta isim olup olmadığına karar verir.
 HEADER_SCHEMA = {
@@ -330,8 +334,13 @@ class _Ollama:
             "format": schema,
             "stream": False,
             "keep_alive": "30m",
-            # num_ctx her çağrıda aynı olmalı; değişirse Ollama modeli her seferinde yeniden yükler
-            "options": {"temperature": 0, "num_ctx": 8192},
+            # num_ctx her çağrıda aynı olmalı; değişirse Ollama modeli her seferinde yeniden yükler.
+            # Tekrar cezaları kapalı: qwen3.5'in varsayılanı presence_penalty 1.5; istemde ya da yanıtta geçmiş rakamları
+            # (ızgarada aynı puanı alan ikinci kutu, "15"teki 1 ve 5) cezalandırıp "15"i "3" okutuyordu.
+            "options": {"temperature": 0, "num_ctx": 8192, "presence_penalty": 0, "frequency_penalty": 0,
+                        "repeat_penalty": 1.0},
+            # düşünen modeller (qwen3.5) önce uzun bir "düşünme" yazar: puan okumada gereksiz ve çok yavaş
+            "think": False,
         }
         if logprobs:
             payload.update(logprobs=True, top_logprobs=5)
@@ -351,6 +360,9 @@ class _Ollama:
                 raise EngineError(f"Okuma motoruyla bağlantı koptu: {e}") from e
             if resp.status_code == 500 and attempt < 2 and "running the model" in resp.text:
                 time.sleep(5)
+                continue
+            if resp.status_code == 400 and attempt < 2 and "think" in resp.text and "think" in payload:
+                payload.pop("think")  # düşünme ayarını tanımayan eski Ollama / model
                 continue
             break
         if resp.status_code == 404:
@@ -1018,13 +1030,17 @@ def second_opinion(settings: dict, items: list[tuple], progress=None) -> dict:
     return {key: v for (key, _im), v in zip(items, vals)}
 
 
-def apply_second_opinion(scores: list, suspicious: dict, checks: dict, model: str) -> None:
-    """İkinci modelin okuması birinciyle tutmayan hücreleri kontrole düşürür (değeri değiştirmez)."""
+def apply_second_opinion(scores: list, suspicious: dict, checks: dict, model: str, options: dict | None = None) -> None:
+    """İkinci modelin okuması birinciyle tutmayan hücreleri kontrole düşürür (değeri değiştirmez); okuduğu sayı hızlı
+    kontrolde ikinci seçenek olur."""
     for i, v2 in checks.items():
         v = scores[i]
         if v is not None and v2 != v:
             note = f"İkinci model ({model.split(':')[0]}) {'puan bulamadı' if v2 is None else f'{v2:g} okudu'}"
             suspicious[str(i)] = (suspicious[str(i)] + "; " + note) if suspicious.get(str(i)) else note
+            if options is not None and v2 is not None:
+                opts = [o for o in options.get(str(i), [v]) if o != v2]
+                options[str(i)] = (opts[:1] + [v2] + opts[1:])[:4]
 
 
 def _read_box(llm: "_Ollama", page, box, maxes, pen_page=None) -> dict:
@@ -1206,7 +1222,7 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
     checks = second_opinion(settings, to_check, progress)
     if checks:
         raw.append({"ikinci_model": settings.get("ikinci_model"), "okumalar": {str(k + 1): v for k, v in checks.items()}})
-        apply_second_opinion(scores, suspicious, checks, settings.get("ikinci_model", ""))
+        apply_second_opinion(scores, suspicious, checks, settings.get("ikinci_model", ""), options)
 
     # kağıdın toplamı: şablonda kutusu varsa oradan, yoksa başlıktan
     total, p_total = None, 0.0
@@ -1319,29 +1335,60 @@ def find_score_marks(page: np.ndarray, an: dict | None = None, color: str | None
     ink = np.bincount(lab.ravel(), weights=marks_mask.ravel().astype(np.float64), minlength=num)
     marks, ids = [], []
     dark = 1.0 - an["norm"].mean(axis=2)
+    raw = kalem.raw_color(an)
     for i in range(1, num):
         x, y, w, h, _a = stats[i]
         side = max(w, h) / W
         if CAND_MIN_SIDE <= side <= CAND_MAX_SIDE and ink[i] >= CAND_MIN_INK * H * W:
             # Soluk renkli izler (sınav kağıdının renkli filigranı/logosu, gölge lekeleri) öğretmen kalemi değildir: tükenmezin
             # en koyu kısmı belirgin koyudur (6 gerçek kağıtta her puanda en koyu %10 ≥ 0.42; filigranda 0.12-0.26).
-            m = (lab[y:y + h, x:x + w] == i) & marks_mask[y:y + h, x:x + w]
-            if np.percentile(dark[y:y + h, x:x + w][m], 90) < CAND_MIN_DARK:
+            # (filigranın üstünden geçen siyah baskı ölçüyü yükseltmesin: önce kümenin kendi mürekkebine göre ayıklanır)
+            s_ = (slice(y, y + h), slice(x, x + w))
+            m = kalem.strip_print((lab[s_] == i) & marks_mask[s_], raw[s_], dark[s_])
+            if not m.any() or np.percentile(dark[s_][m], 90) < CAND_MIN_DARK:
                 continue
             marks.append((int(x), int(y), int(w), int(h)))
             ids.append(i)
     # Modele giden "yalnızca mürekkep" görüntüsünde yalnızca adayların kendi kümeleri kalır. Dairenin hemen yanındaki siyah
     # basılı soru numarası, komşuluk renk ortalaması yüzünden kısmen "mavi" sayılıp küçük kırıntılar halinde süzgeçten
     # geçiyordu; model de dairedeki "4" yerine yanındaki basılı "3)"ü okudu (gerçek kağıt). Küme dışı kırıntılar silinir.
+    marks, ids = _split_merged(marks, ids, marks_mask, lab)
     # Her adayın mürekkebinden ona bitişik siyah baskı kendi mürekkebine göre ayıklanır (bkz. kalem.strip_print).
     only = np.full(page.shape, 255, np.uint8)
-    raw = kalem.raw_color(an)
     gap = max(5, 2 * int(round(max(H, W) / 1000)) + 3) | 1
     for (x, y, w, h), i in zip(marks, ids):
         s = (slice(y, y + h), slice(x, x + w))
         m = kalem.strip_print(pen[s] & (lab[s] == i), raw[s], dark[s], gap)
         only[s][m] = (an["norm"][s][m] * 255).astype(np.uint8)
     return marks, only
+
+
+def _split_merged(marks: list, ids: list, mask: np.ndarray, lab: np.ndarray) -> tuple[list, list]:
+    """Birbirine değen iki puan dairesi tek aday olmuştu (gerçek kağıtta 3. sorunun "6"sı ile 4. sorunun "14"ü): 7 yerine
+    6 aday bulundu ve sonraki bütün puanlar bir soru kaydı. Bir sayfadaki puan daireleri benzer boyuttadır; ortancanın
+    belirgin üstünde uzun (ya da geniş) bir aday, en az mürekkepli satırından (sütunundan) ikiye bölünür."""
+    if len(marks) < 3:
+        return marks, ids
+    mh = float(np.median([m[3] for m in marks]))
+    mw = float(np.median([m[2] for m in marks]))
+    out_m, out_i = [], []
+    for (x, y, w, h), i in zip(marks, ids):
+        parts = [(x, y, w, h)]
+        for axis in (0, 1):  # 0: dikey üst üste (satırdan böl), 1: yan yana (sütundan böl)
+            size, other, med, omed = (h, w, mh, mw) if axis == 0 else (w, h, mw, mh)
+            if size > 1.7 * med and other < 1.4 * omed:
+                ink = (mask[y:y + h, x:x + w] & (lab[y:y + h, x:x + w] == i)).sum(axis=1 - axis).astype(float)
+                lo, hi = int(0.3 * size), int(0.7 * size)
+                if hi > lo:
+                    cut = lo + int(np.argmin(ink[lo:hi]))
+                    # kesim yerindeki mürekkep, iki parçanın tipik satırından çok az olmalı (gerçek bir boğaz)
+                    if ink[cut] <= 0.35 * float(np.median(ink[ink > 0])) if (ink > 0).any() else False:
+                        parts = ([(x, y, w, cut), (x, y + cut, w, h - cut)] if axis == 0 else
+                                 [(x, y, cut, h), (x + cut, y, w - cut, h)])
+                        break
+        out_m.extend(parts)
+        out_i.extend([i] * len(parts))
+    return out_m, out_i
 
 
 def _mark_at_edge(only: np.ndarray, box) -> bool:
@@ -1476,7 +1523,8 @@ def _assign_questions(labels: list, n: int, strong: list[int | None] | None = No
     strong: adayın yanında yerel OCR ile bulunan basılı soru numarası (güçlü kanıt); labels: madde harfi ("a", "b";
     zayıf kanıt, yalnızca maddeli hücrelerde sayılır). Okuma sırası da kanıttır (adaylar doğrulanmış öğretmen
     puanları, soruların çoğunun puanı vardır).
-    Puanlama: güçlü numara tutarsa +4, tutmazsa -4; madde harfi +1 / -0.5; atlanan hücre -2; bağlanamayan aday -4."""
+    Puanlama: güçlü numara tutarsa +4, tutmazsa -4; madde harfi +1 / -0.5; atlanan hücre -2 (sondakiler de);
+    bağlanamayan aday -4."""
     from functools import lru_cache
     m = len(labels)
     strong = list(strong) if strong is not None else [None] * m
@@ -1485,7 +1533,9 @@ def _assign_questions(labels: list, n: int, strong: list[int | None] | None = No
     @lru_cache(maxsize=None)
     def best(i: int, q: int) -> tuple[float, tuple]:
         if i == m:
-            return 0.0, ()
+            # Sonda boş kalan hücreler de atlanmış sayılır. Sayılmayınca gerçek kağıtta (7 puan, 7 soru) son iki dairenin
+            # yanında da "6" okununca 6. puan (8) atılıp 7.'si (4) S6'ya yazıldı, S7 boş kaldı: doğru sırayla berabere.
+            return -2.0 * (n - q), ()
         skip_s, skip_rest = best(i + 1, q)
         top = (skip_s - 4.0, (None,) + skip_rest)
         for r in range(q + 1, n + 1):
@@ -1815,7 +1865,7 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
     checks = second_opinion(settings, to_check, progress)
     if checks:
         raw.append({"ikinci_model": settings.get("ikinci_model"), "okumalar": {str(k + 1): v for k, v in checks.items()}})
-        apply_second_opinion(scores, suspicious, checks, settings.get("ikinci_model", ""))
+        apply_second_opinion(scores, suspicious, checks, settings.get("ikinci_model", ""), options)
     for i in range(n):
         if scores[i] is None:
             add_note(i, "Bu sorunun puanı kağıtta bulunamadı")

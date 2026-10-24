@@ -1,24 +1,25 @@
 # Baska bir bilgisayara verilebilecek, yapay zeka modeli DAHIL tek parca paket olusturur.
 # Alan kisinin internetten hicbir sey indirmesi gerekmez.
 #
-# Kullanim:  powershell -ExecutionPolicy Bypass -File araclar\paket_olustur.ps1 [-Hedef C:\...] [-Sadece8b]
+# Kullanim:  powershell -ExecutionPolicy Bypass -File araclar\paket_olustur.ps1 [-Hedef C:\...] [-SadeceBuyuk]
 # Cikti:     <Hedef>\SinavOkuyucu-Paket\
 #              KUR.bat              -> cift tiklayinca kurar, masaustune kisayol koyar
 #              OKU-BENI.txt
 #              SinavOkuyucu\        -> program + ollama\ + modeller\
 #
-# Not: Paket ~12 GB'dir (8B + 4B model). OneDrive klasorune koymayin; USB bellek/harici disk ile tasiyin.
+# Not: Paket ~12 GB'dir (buyuk + kucuk model). OneDrive klasorune koymayin; USB bellek/harici disk ile tasiyin.
 param(
     [string]$Hedef = (Join-Path $env:USERPROFILE "SinavOkuyucu-Paket"),
-    [switch]$Sadece8b
+    [Alias("Sadece8b")][switch]$SadeceBuyuk
 )
 $ErrorActionPreference = "Stop"
 $proje = Split-Path $PSScriptRoot -Parent
 $derleme = Join-Path $env:TEMP "sinav-okuyucu-derleme\dist\SinavOkuyucu"
 $ollamaKaynak = Join-Path $env:LOCALAPPDATA "Programs\Ollama"
 $modelKaynak = Join-Path $env:USERPROFILE ".ollama\models"
-$modeller = @("8b-instruct")
-if (-not $Sadece8b) { $modeller += "4b-instruct" }
+# app\desktop.py BIG_MODELS / SMALL_MODELS ile ayni: buyuk (varsayilan) model + az bellekli bilgisayarlar icin kucuk model
+$modeller = @("qwen3.5:9b")
+if (-not $SadeceBuyuk) { $modeller += "qwen3.5:4b" }
 
 if ($Hedef -like "*OneDrive*") { throw "Paketi OneDrive klasorune koymayin (12 GB buluta yuklenir). Baska bir -Hedef verin." }
 
@@ -42,10 +43,11 @@ if (-not (Test-Path (Join-Path $ollamaHedef "ollama.exe"))) { throw "Ollama bulu
 # 3) Modeller: yalnizca gereken manifest ve bloblar
 Write-Output "[3/4] Modeller kopyalaniyor ($($modeller -join ', '))... bu biraz surer"
 $mHedef = Join-Path $prog "modeller"
-foreach ($tag in $modeller) {
-    $man = Join-Path $modelKaynak "manifests\registry.ollama.ai\library\qwen3-vl\$tag"
-    if (-not (Test-Path $man)) { throw "Model yuklu degil: qwen3-vl:$tag  (once: ollama pull qwen3-vl:$tag)" }
-    $manHedef = Join-Path $mHedef "manifests\registry.ollama.ai\library\qwen3-vl"
+foreach ($model in $modeller) {
+    $repo, $tag = $model -split ":", 2
+    $man = Join-Path $modelKaynak "manifests\registry.ollama.ai\library\$repo\$tag"
+    if (-not (Test-Path $man)) { throw "Model yuklu degil: $model  (once: ollama pull $model)" }
+    $manHedef = Join-Path $mHedef "manifests\registry.ollama.ai\library\$repo"
     New-Item -ItemType Directory -Force $manHedef | Out-Null
     Copy-Item $man (Join-Path $manHedef $tag)
     $j = Get-Content $man -Raw | ConvertFrom-Json

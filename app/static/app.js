@@ -431,7 +431,7 @@ document.getElementById("settings-btn").onclick = async () => {
   await refreshStatus();
   const d = state.durum;
   if (!d) return;
-  const label = (m) => (m.includes("8b") ? "Doğru — " : m.includes("4b") ? "Hızlı — " : m.includes("2b") ? "Çok hızlı — " : "") + m;
+  const label = (m) => (m.startsWith("qwen3.5:9b") ? "En doğru — " : m.includes("8b") ? "Doğru — " : m.includes("4b") ? "Hızlı — " : m.includes("2b") ? "Çok hızlı — " : "") + m;
   const models = [...new Set([d.ayarlar.model, ...(d.ollama.modeller || [])])].filter(Boolean);
   openModal(`${head("Ayarlar")}
     <form id="settings-form">
@@ -439,7 +439,7 @@ document.getElementById("settings-btn").onclick = async () => {
         <label class="f">Okuma modeli
           <select name="model">${models.map((m) => `<option value="${esc(m)}" ${m === d.ayarlar.model ? "selected" : ""}>${esc(label(m))}</option>`).join("")}</select>
         </label>
-        <p class="hint">8b en az hata yapar (önerilen). 4b yaklaşık iki kat hızlıdır ama daha çok hata yapar.</p>
+        <p class="hint">qwen3.5:9b en az hata yapar (önerilen). 4b modeller daha hızlıdır ama daha çok hata yapar.</p>
         <label class="f" style="margin-top:12px">Çapraz kontrol modeli
           <select name="ikinci_model">${[...new Set(["kapali", d.ayarlar.ikinci_model || "kapali", ...(d.ollama.modeller || [])])]
             .filter((m) => m === "kapali" || m !== f_model(d))

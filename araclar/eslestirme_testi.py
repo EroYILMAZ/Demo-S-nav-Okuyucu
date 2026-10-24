@@ -176,5 +176,15 @@ h = R.clean_header({"name_written": False, "student_name": "Ayşe Yılmaz", "num
 ok(h["student_name"] == "" and h["student_number"] == "368", f"başlık temizliği: {h}")
 ok(R.number_is_score("13", [13.0, 7.0]) and not R.number_is_score("368", [13.0]), "numara bir puanla aynıysa yakalanır")
 
+# 10b) gerçek kağıt: 7 puan, 7 soru; son iki dairenin yanında da basılı "6" okundu -> sıra korunur, S7 boş kalmaz
+a = R._assign_questions([None] * 7, 7, [None] * 5 + [6, 6])
+ok(a == [1, 2, 3, 4, 5, 6, 7], f"sonda boş hücre de atlanmış sayılır: {a}")
+
+# 11) ikinci model tutmazsa: değer aynı kalır, hücre kontrole düşer, ikinci modelin okuması hızlı kontrolde 2. seçenek olur
+sc, sus, opts = [15.0, 4.0, 8.0], {}, {"0": [15.0, 13.0], "1": [4.0]}
+R.apply_second_opinion(sc, sus, {0: 5.0, 1: 4.0, 2: None}, "minicpm-v:8b", opts)
+ok(sc == [15.0, 4.0, 8.0] and sorted(sus) == ["0", "2"] and opts["0"] == [15.0, 5.0, 13.0] and opts["1"] == [4.0]
+   and "2" not in opts, f"ikinci model: {sus} {opts}")
+
 print("\nBAŞARISIZ:", fails)
 sys.exit(1 if fails else 0)
