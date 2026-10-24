@@ -392,3 +392,21 @@ body.dropping::after {
 .written-total { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
 .written-total label { display: flex; flex-direction: column; gap: 2px; }
 .written-total input { width: 90px; height: 30px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--input); }
+
+/* hızlı kontrol */
+.btn.sm { height: 28px; padding: 0 10px; font-size: 13px; }
+.qk-top { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--muted); }
+.qk-top b { color: var(--text); }
+.qk-n { font-variant-numeric: tabular-nums; }
+.qk-q { font-size: 22px; font-weight: 600; margin-top: 6px; }
+.qk-q small { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+.qk-why { font-size: 13px; color: var(--muted); margin: 4px 0 10px; }
+.qk-img { display: flex; justify-content: center; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; }
+.qk-img img { max-width: 100%; max-height: 300px; object-fit: contain; }
+.qk-img.page img { max-height: 60vh; }
+.qk-opts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.qk-opts .btn { min-width: 64px; font-size: 18px; justify-content: center; }
+.qk-opts kbd, .qk-other kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; margin-right: 6px; font-family: inherit; }
+.qk-opts .btn.primary kbd { color: inherit; border-color: currentColor; }
+.qk-other { display: flex; gap: 8px; margin-top: 12px; }
+.qk-other input { flex: 1; min-width: 0; height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--input); font-size: 16px; }

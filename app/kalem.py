@@ -114,6 +114,39 @@ def analyze(a: np.ndarray) -> dict:
     return {"norm": n, "ink": ink, "pen": pen, "color": color, "ca": ca, "cb": cb}
 
 
+def raw_color(an: dict) -> np.ndarray:
+    """Komşuluk ortalaması OLMADAN her pikselin kendi renk / koyuluk oranı. Renkli mürekkebe bitişik siyah baskı,
+    ortalanmış renkte "mavi" görünebiliyor (dairenin altında kalan basılı "3)" süzgeçten geçti); kendi rengi ise soluktur:
+    gerçek kağıtta sızan baskı ~0.17 (daha koyu), mavi rakam ~0.63."""
+    n = an["norm"].astype(np.float32)
+    lab = cv2.cvtColor(n, cv2.COLOR_RGB2Lab)
+    cb = lab[..., 2] - NEUTRAL_B
+    dark = 1.0 - n.mean(axis=2)
+    return np.hypot(lab[..., 1], np.where(cb < 0, cb, cb * 0.3)) / np.maximum(100 * dark, 5.0)
+
+
+def strip_print(mask: np.ndarray, raw: np.ndarray, dark: np.ndarray, gap: int = 5) -> np.ndarray:
+    """Bir puan kümesinin mürekkebinden (mask) ona bitişik siyah baskıyı ayıklar. Mavi daireye değen basılı "3)",
+    komşuluk renk ortalaması yüzünden "mavi" sayılıp süzgeçten geçiyordu; model dairedeki "4" yerine onu okudu.
+    Ölçü kümenin KENDİ mürekkebidir: kümenin tipik renk oranından belirgin soluk ve tipik koyuluğundan belirgin koyu
+    pikseller baskıdır. Sabit eşik kullanılmaz: çok koyu lacivert bir kalemin kendisi de "soluk ve koyu" görünür; sabit
+    eşik o kalemle yazılmış "10"u parçalayıp "40" yaptı. Baskının açık renkli kenarları da silinir (yalnızca koyu içi
+    silinince içi boş bir "2." kalıyor, model onu ondalık sanıyordu); kalemin yazının üstünden geçtiği yerde açılan küçük
+    boşluklar geri doldurulur. raw: raw_color(); dark: 1 - norm ortalaması (sayfanın tamamı ya da aynı kırpım)."""
+    if mask.sum() < 20:
+        return mask
+    r_med = float(np.median(raw[mask]))
+    d_med = float(np.median(dark[mask]))
+    printed = mask & (raw < 0.5 * r_med) & (dark > d_med + 0.12)
+    if not printed.any():
+        return mask
+    halo = cv2.dilate(printed.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+    kept = mask & ~(printed | (halo & (raw < 0.75 * r_med)))
+    closed = cv2.morphologyEx(kept.astype(np.uint8), cv2.MORPH_CLOSE,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (gap, gap))) > 0
+    return mask & (kept | closed)
+
+
 FAMILIES = {"kirmizi": 1, "mavi": 2, "yesil": 3}
 FAMILY_NAMES = {1: "kırmızı", 2: "mavi", 3: "yeşil"}
 

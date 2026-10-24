@@ -108,6 +108,24 @@ ok(r["puanlar"] == [11, 12, None, None, 15], f"numara değişikliğinde puanlar 
 c.put(f"/api/sinavlar/{exm['id']}", json={"tam_puanlar": [20, 20, 10, 10, 40, 10], "soru_adlari": ["1", "2", "3a", "3b", "5", "6"]}).raise_for_status()
 r, e = rec(exm["id"])
 ok(r["puanlar"] == [11, 12, None, None, 15, None], f"sona eklenen soru boş: {r['puanlar']}")
+
+print("Hızlı kontrol: okunan değer teyit edilince uyarı kalkıyor")
+
+
+def flag(e):
+    x = next(x for x in e["kayitlar"] if x["id"] == "kayit-madde")
+    x["supheli"] = {"0": "Okumalar farklı: 11 / 17", "1": "Okumalar farklı: 12 / 18"}
+    x["secenekler"] = {"0": [11, 17]}
+
+
+main.store.update_exam(exm["id"], flag)
+c.patch(f"/api/sinavlar/{exm['id']}/kagit/kayit-madde", json={"puan": {"soru": 0, "deger": 11}}).raise_for_status()
+r, e = rec(exm["id"])
+ok("p0" in r["hucre_uyarilari"], "aynı değer teyitsiz gönderilince uyarı kalır (eski davranış)")
+c.patch(f"/api/sinavlar/{exm['id']}/kagit/kayit-madde", json={"puan": {"soru": 0, "deger": 11, "teyit": True}}).raise_for_status()
+r, e = rec(exm["id"])
+ok("p0" not in r["hucre_uyarilari"] and "p1" in r["hucre_uyarilari"], f"teyit edilen hücrenin uyarısı kalktı: {r['hucre_uyarilari']}")
+ok(r.get("secenekler", {}).get("0") == [11, 17], "seçenekler kayıtta duruyor")
 c.delete(f"/api/sinavlar/{exm['id']}")
 
 print("Sınıf listesi kütüphanesi")

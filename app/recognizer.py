@@ -618,9 +618,11 @@ def recognize(images: list[Path], maxes: list[float], settings: dict, progress=N
     confs: list[float] = [0.0] * n
     alts: dict[str, str] = {}
     suspicious: dict[str, str] = {}
+    options: dict[str, list] = {}
     for i, reads in found.items():
         values = [r[0] for r in reads]
         scores[i] = values[0]
+        options[str(i)] = list(dict.fromkeys(values))[:4]
         if len(set(values)) > 1:
             suspicious[str(i)] = "Farklı okumalar: " + " / ".join(f"{v:g}" for v in values)
             confs[i] = min(0.5, reads[0][1])
@@ -702,6 +704,7 @@ def recognize(images: list[Path], maxes: list[float], settings: dict, progress=N
         },
         "liste_secimi": choice,
         "duzen": layout,
+        "secenekler": options,
         "ham": raw,
     }
 
@@ -781,6 +784,13 @@ GRID_MAX = 6    # bir görüntüde en fazla bu kadar kutu (~1 megapiksel). Daha 
                 # görüntü kodlayıcısının belleğini aşıp sürücüyü çökertti ("device lost"); süre piksel sayısıyla
                 # orantılı olduğu için bölmek okumayı uzatmaz.
 GRID_VIEWS = [("kalem", 0.10, 1), ("kalem_genis", 0.35, 2), ("kalem_siki", 0.0, 3), ("kalem_orta", 0.22, 4)]
+# Şablonsuz okumada aday kutusu mürekkep kümesinin kendisidir (dar): geniş kırpım yanındaki başka işaretleri de içine alır.
+# Gerçek ve sentetik kağıtlarda bakışlar tutmadığında doğru okuma oranı: orta (0.22) %69, dar (0.10) %62, sıkı (0.0) %59;
+# geniş (0.35) %17, tek tek yakından geniş okumalar %21-38 (eskiden en ağır sayılıyorlardı; "8"i "2" yaptılar).
+# Bu yüzden şablonsuz okumada geniş bakış yoktur, tutmayan kutular yine toplu ızgarada yeni dar kırpımlarla okunur.
+# Sıra önemli: eşitlikte ilk bakışın (en güvenilir: orta) okuması kazanır.
+AUTO_VIEWS = [("kalem_orta", 0.22, 4), ("kalem", 0.10, 1), ("kalem_siki", 0.0, 3), ("kalem_ince", 0.05, 2)]
+AUTO_EXTRA = [("kalem_ek_1", 0.16, 5), ("kalem_ek_2", 0.28, 6), ("kalem_ek_3", 0.03, 7)]
 CLOSE_WEIGHT = 1.5  # tek tek yakından okuma (768 piksel) toplu bakıştan (kutu başına ~380 piksel) güvenilir
 
 _font_cache: dict = {}
@@ -878,8 +888,9 @@ def crop_alone(img: np.ndarray, box, pad: float, others: list) -> np.ndarray:
     return part
 
 
-def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
+def read_boxes(llm: "_Ollama", items: list[tuple], progress=None, auto: bool = False) -> list[dict]:
     """Bir kağıdın bütün puan kutularını toplu okur. items: [(asıl sayfa, renkli kalem sayfası, Box)].
+    auto: şablonsuz okuma (kutu mürekkep kümesinin kendisi): dar bakışlar, tutmayanlar yine toplu (AUTO_VIEWS).
     Dönüş, her kutu için _read_box ile aynı biçimde: {"deger", "eminlik", "oylar", "not", "kontrol"}."""
     import random
 
@@ -905,17 +916,29 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
     if not active:
         return results
 
-    for vi, (vname, pad, seed) in enumerate(GRID_VIEWS):
+    views = AUTO_VIEWS if auto else GRID_VIEWS
+    for vi, (vname, pad, seed) in enumerate(views):
         if progress:
-            progress(f"Puanlar okunuyor (bakış {vi + 1}/{len(GRID_VIEWS) + 1})…")
+            progress(f"Puanlar okunuyor (bakış {vi + 1}/{len(views) + 1})…")
         order = list(active)
         random.Random(seed).shuffle(order)
         vals = ask_grid(llm, [crop_of(i, 1, pad) for i in order], GRID_PEN_PROMPT)
         for i, v in zip(order, vals):
             votes[i].append((vname, v, 0.0, 1.0))
 
-    # bakışlar tutmayan kutular: tek tek, yakından ek okumalar (toplu görüntünün bağlamından bağımsız)
     disputed = [i for i in active if len({v for _n, v, _c, _w in votes[i]}) > 1]
+    if auto and disputed:
+        # bakışlar tutmayan kutular: yeni dar kırpımlarla, yine toplu ızgarada (yakından tek tek okuma daha kötüydü)
+        for vi, (vname, pad, seed) in enumerate(AUTO_EXTRA):
+            if progress:
+                progress(f"Tutmayan puanlar yeniden okunuyor ({vi + 1}/{len(AUTO_EXTRA)})…")
+            order = list(disputed)
+            random.Random(seed).shuffle(order)
+            vals = ask_grid(llm, [crop_of(i, 1, pad) for i in order], GRID_PEN_PROMPT)
+            for i, v in zip(order, vals):
+                votes[i].append((vname, v, 0.0, 1.0))
+        disputed = []
+    # bakışlar tutmayan kutular: tek tek, yakından ek okumalar (toplu görüntünün bağlamından bağımsız)
     for k, i in enumerate(disputed):
         if progress:
             progress(f"Tutmayan puan yakından okunuyor ({k + 1}/{len(disputed)})…")
@@ -936,7 +959,7 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
         value, top, total = sablon.weighted_vote([(v, w) for _n, v, _c, w in votes[i]])
         notes = []
         numeric = [(v, w) for _n, v, _c, w in votes[i] if v is not None]
-        grid_numeric = sum(1 for n_, v, _c, _w in votes[i] if v is not None and n_ in {g[0] for g in GRID_VIEWS})
+        grid_numeric = sum(1 for n_, v, _c, _w in votes[i] if v is not None and n_ in {g[0] for g in views})
         if value is None and grid_numeric >= 2 and sum(w for _v, w in numeric) >= 0.5 * (total - sum(w for _v, w in numeric)):
             # Toplu bakışların çoğu bir sayı gördü, yakından okumalar görmedi (gerçek kağıtta "·3" puanı: 13/13/3/3, yakından
             # üç kez "sayı yok"). Puan atılırsa şablonsuz okumada sonraki puanlar bir soru kayabiliyordu: en çok okunan
@@ -962,6 +985,20 @@ def read_boxes(llm: "_Ollama", items: list[tuple], progress=None) -> list[dict]:
         results[i] = {"deger": value, "eminlik": top / total if total else 0.0, "oylar": oylar, "not": "; ".join(notes),
                       "kontrol": Image.fromarray(crop_of(i, 1, 0.22))}
     return results
+
+
+def vote_options(oylar: list, chosen: float | None = None, limit: int = 4) -> list[float]:
+    """Hızlı kontrol için hücrenin olası değerleri: bakışların okuduğu farklı sayılar, oy ağırlığına göre (seçilen değer
+    önce). Süzgeçsiz bakışın okuması da (ağırlığı yok) bir seçenek olarak eklenir. Öğretmen resme bakıp birini seçer."""
+    weight: dict[float, float] = {}
+    for _name, v, _c, w in oylar:
+        if v is None:
+            continue
+        weight[v] = weight.get(v, 0.0) + (w if w else 0.5)
+    opts = sorted(weight, key=lambda v: -weight[v])
+    if chosen is not None:
+        opts = [chosen] + [v for v in opts if v != chosen]
+    return opts[:limit]
 
 
 def second_opinion(settings: dict, items: list[tuple], progress=None) -> dict:
@@ -1129,6 +1166,7 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
     scores: list[float | None] = [None] * n
     confs: list[float] = [0.0] * n
     suspicious: dict[str, str] = {}
+    options: dict[str, list] = {}
     to_check: list[tuple] = []
     readable = []
     for q in range(1, n + 1):
@@ -1157,6 +1195,7 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
             r = _read_box(llm, warped[box.sayfa][0], box, maxes, pen_pages.get(box.sayfa))
         raw.append({"soru": q, "oylar": [(name, v, round(c, 3), w) for name, v, c, w in r["oylar"]]})
         scores[q - 1], confs[q - 1] = r["deger"], r["eminlik"]
+        options[str(q - 1)] = vote_options(r["oylar"], r["deger"])
         if r["not"]:
             suspicious[str(q - 1)] = r["not"]
         if _box_cut_off(warped[box.sayfa][2], pen_pages.get(box.sayfa), warped[box.sayfa][0], box):
@@ -1228,6 +1267,7 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
                     "toplam_tutuyor": total_ok},
         "liste_secimi": choice,
         "duzen": {},
+        "secenekler": options,
         "hizalanamayan": unaligned,
         "ham": raw,
     }
@@ -1249,7 +1289,8 @@ def recognize_templated(images: list[Path], maxes: list[float], settings: dict, 
 
 CAND_MIN_SIDE = 0.035   # aday kümenin uzun kenarı sayfa genişliğinin en az bu kadarı (puan dairesi ~%8-15)
 CAND_MAX_SIDE = 0.30    # bundan büyük küme puan değil (öğrencinin renkli kalemle yazdığı uzun satırlar vb.)
-CAND_MIN_INK = 0.0004   # kümedeki mürekkep pikseli sayfanın en az bu oranı
+CAND_MIN_INK = 0.00025  # kümedeki mürekkep pikseli sayfanın en az bu oranı (ince kalemle küçük bir daire ~0.0004)
+CAND_MIN_DARK = 0.3     # kümenin en koyu %10'u bundan açıksa soluk baskı/filigran/gölge: aday değil
 
 
 def find_score_marks(page: np.ndarray, an: dict | None = None, color: str | None = None) -> tuple[list, np.ndarray]:
@@ -1276,12 +1317,30 @@ def find_score_marks(page: np.ndarray, an: dict | None = None, color: str | None
     merged = cv2.dilate(marks_mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
     num, lab, stats, _ = cv2.connectedComponentsWithStats(merged, connectivity=8)
     ink = np.bincount(lab.ravel(), weights=marks_mask.ravel().astype(np.float64), minlength=num)
-    marks = []
+    marks, ids = [], []
+    dark = 1.0 - an["norm"].mean(axis=2)
     for i in range(1, num):
         x, y, w, h, _a = stats[i]
         side = max(w, h) / W
         if CAND_MIN_SIDE <= side <= CAND_MAX_SIDE and ink[i] >= CAND_MIN_INK * H * W:
+            # Soluk renkli izler (sınav kağıdının renkli filigranı/logosu, gölge lekeleri) öğretmen kalemi değildir: tükenmezin
+            # en koyu kısmı belirgin koyudur (6 gerçek kağıtta her puanda en koyu %10 ≥ 0.42; filigranda 0.12-0.26).
+            m = (lab[y:y + h, x:x + w] == i) & marks_mask[y:y + h, x:x + w]
+            if np.percentile(dark[y:y + h, x:x + w][m], 90) < CAND_MIN_DARK:
+                continue
             marks.append((int(x), int(y), int(w), int(h)))
+            ids.append(i)
+    # Modele giden "yalnızca mürekkep" görüntüsünde yalnızca adayların kendi kümeleri kalır. Dairenin hemen yanındaki siyah
+    # basılı soru numarası, komşuluk renk ortalaması yüzünden kısmen "mavi" sayılıp küçük kırıntılar halinde süzgeçten
+    # geçiyordu; model de dairedeki "4" yerine yanındaki basılı "3)"ü okudu (gerçek kağıt). Küme dışı kırıntılar silinir.
+    # Her adayın mürekkebinden ona bitişik siyah baskı kendi mürekkebine göre ayıklanır (bkz. kalem.strip_print).
+    only = np.full(page.shape, 255, np.uint8)
+    raw = kalem.raw_color(an)
+    gap = max(5, 2 * int(round(max(H, W) / 1000)) + 3) | 1
+    for (x, y, w, h), i in zip(marks, ids):
+        s = (slice(y, y + h), slice(x, x + w))
+        m = kalem.strip_print(pen[s] & (lab[s] == i), raw[s], dark[s], gap)
+        only[s][m] = (an["norm"][s][m] * 255).astype(np.uint8)
     return marks, only
 
 
@@ -1344,12 +1403,14 @@ _PART_RE = re.compile(r"(?<![0-9A-Za-zÇĞİÖŞÜçğıöşü])([A-Ha-h])\s*[-.
 _ALNUM = re.compile(r"[0-9A-Za-zÇĞİÖŞÜçğıöşü]")
 
 
-def printed_label(im: Image.Image, pen_img: np.ndarray, box, n: int) -> tuple[int | None, str | None]:
+def printed_label(im: Image.Image, pen_img: np.ndarray, box, n: int,
+                  printed_out: list | None = None) -> tuple[int | None, str | None]:
     """Puan dairesinin yakınındaki BASILI soru numarası ("5-)", "5)", "5.", "Soru 5") ve madde harfi ("A.", "b)") —
     yerel OCR ile, büyütülmüş çevre kırpımında. Dönüş: (numara, küçük harf) — bulunamayan None.
     Renkli mürekkebin üstüne düşen metin (öğretmenin el yazısı "10" dairesiyle "10)" okunabilir) sayılmaz. Gerçek
     kağıtlarda bulunan numaraların hepsi doğruydu (yaklaşık yarısı bulunuyor; daire altında kalanlar bulunamıyor).
-    Numara sınavın soru sayısından büyük de olabilir: kağıttaki numaralandırma sınavdakinden farklı demektir."""
+    Numara sınavın soru sayısından büyük de olabilir: kağıttaki numaralandırma sınavdakinden farklı demektir.
+    printed_out verilirse basılı bulunan metin satırlarının sayfadaki kutuları (x1, y1, x2, y2) ona eklenir."""
     global _ocr
     try:
         from rapidocr_onnxruntime import RapidOCR
@@ -1387,6 +1448,8 @@ def printed_label(im: Image.Image, pen_img: np.ndarray, box, n: int) -> tuple[in
         printed = dark & ~p
         if printed.sum() < 0.5 * max(1, (dark | p).sum()):
             continue
+        if printed_out is not None:
+            printed_out.append((x1, y1, x2, y2))
         # Yalnızca metin parçasının BAŞINDAKİ numara ve madde harfi: soru numarası satır başında durur; satır içindeki
         # sayılar ("8. sınıf", "x = 19.") numara değildir (sentetik matematik sayfasında 8, 12, 19 numara sanıldı).
         # Kırpımın sol kenarında kesilmiş satır parçasının başı gerçek satır başı değildir.
@@ -1554,7 +1617,7 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
             found.append((pi, col, y, y + h, x, sablon.Box(0, pi, x / W, y / H, w / W, h / H)))
     found = [(f[0], f[5]) for f in _reading_order(found)]  # (sayfa, Box)
     raw.append({"adaylar": [[pi + 1, round(b.x, 3), round(b.y, 3)] for pi, b in found]})
-    if len(found) < max(1, n // 2) or len(found) > 4 * n:
+    if len(found) < max(1, n // 2) or len(found) > max(4 * n, 20):
         # renkli puan bulunamadı (siyah kalem, puan tablosu) ya da öğrenci de renkli kalem kullanmış: eski yöntem
         r = recognize(images, maxes, settings, progress, layout=layout, roster=roster, pages=pages, labels=labels)
         r["uyarilar"] = row_notes + [f"Puanların yeri bulunamadı ({len(found)} renkli aday); bütün sayfa okundu. "
@@ -1570,8 +1633,11 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
     raw.append({"baslik": header, "eminlik": hconf})
     no0 = re.sub(r"\D", "", str(header.get("student_number") or ""))
 
-    # bütün adayları toplu oku; sayı olanların yanındaki basılı soru numarasını yerel OCR ile bul
-    rs = read_boxes(llm, [(page_arrays[pi], pen_pages[pi], box) for pi, box in found], progress)
+    # Her adayın çevresindeki basılı yazı yerel OCR ile okunur (soru numarası ve madde harfi); sonra adaylar toplu okunur.
+    if progress:
+        progress("Puanların çevresindeki basılı yazı okunuyor…")
+    context = [printed_label(pages[pi], pen_pages[pi], box, n) for pi, box in found]
+    rs = read_boxes(llm, [(page_arrays[pi], pen_pages[pi], box) for pi, box in found], progress, auto=True)
     if progress:
         progress("Puanların hangi soruya ait olduğu bulunuyor…")
     reads = []  # (Box, okuma sonucu, basılı soru numarası)
@@ -1579,7 +1645,7 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
         if r["deger"] is None:
             raw.append({"aday": ci + 1, "oylar": [(nm, v) for nm, v, _c, _w in r["oylar"]], "sonuc": "puan değil"})
             continue
-        lab = printed_label(pages[pi], pen_pages[pi], box, n)
+        lab = context[ci]
         reads.append((box, r, lab))
         raw.append({"aday": ci + 1, "sayfa": pi + 1, "oylar": [(nm, v) for nm, v, _c, _w in r["oylar"]], "soru_no": lab})
 
@@ -1686,6 +1752,7 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
     scores: list[float | None] = [None] * n
     confs: list[float] = [0.0] * n
     suspicious: dict[str, str] = {}
+    options: dict[str, list] = {}
     to_check: list[tuple] = []
     crops = {}
 
@@ -1704,6 +1771,7 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
             continue
         i = q - 1
         crops[i] = Image.fromarray(sablon.crop(page_arrays[box.sayfa], box, 0.25))
+        options[str(i)] = vote_options(r["oylar"], r["deger"])
         scores[i], confs[i] = r["deger"], r["eminlik"]
         if r.get("kontrol") is not None:
             to_check.append((i, r["kontrol"]))
@@ -1737,6 +1805,12 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
         targets |= {t - 1 for t in (prev, nxt) if t is not None}
         for t in sorted(targets):
             add_note(t, f"Yakında hangi soruya ait olduğu anlaşılamayan bir puan daha okundu ({r['deger']:g}), kağıda bakın")
+            # hızlı kontrolde bu puan da komşu hücrenin seçeneği olsun; hücre boşsa resmi de onun resmi
+            opts = options.setdefault(str(t), [])
+            if r["deger"] not in opts:
+                opts.append(r["deger"])
+            if t not in crops:
+                crops[t] = Image.fromarray(sablon.crop(page_arrays[box.sayfa], box, 0.25))
         row_notes.append(f"Hangi soruya ait olduğu anlaşılamayan bir puan okundu: {r['deger']:g}")
     checks = second_opinion(settings, to_check, progress)
     if checks:
@@ -1762,6 +1836,7 @@ def recognize_auto(images: list[Path], maxes: list[float], settings: dict, progr
                     "toplam_tutuyor": total_ok},
         "liste_secimi": choice,
         "duzen": layout,
+        "secenekler": options,
         "ham": raw,
     }
 

@@ -90,13 +90,13 @@ def run(cands, n, labels, edge=None, names=None, maxes=None):
     R._Ollama = FakeLLM
     R.second_opinion = lambda *a, **k: {}
 
-    def fake_read(llm, items, progress=None):
+    def fake_read(llm, items, progress=None, auto=False):
         out = []
         for (_p, _q, box), (_y, v, oylar) in zip(items, cands):
             out.append({"deger": v, "eminlik": 1.0, "oylar": oylar, "not": "", "kontrol": None})
         return out
     R.read_boxes = fake_read
-    def fake_label(im, pen, box, n):
+    def fake_label(im, pen, box, n, printed_out=None):
         lab = labels.get(round(box.y, 2))
         return lab if isinstance(lab, tuple) else (lab, None)
     R.printed_label = fake_label

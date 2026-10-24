@@ -157,6 +157,13 @@ nedeni satırın altında ve hücrenin üzerine gelince yazar:
 
 Bir hücreyi elle düzeltirseniz o hücrenin uyarısı kalkar. **Onayla** ile kağıt kontrol listesinden çıkar.
 
+### Hızlı kontrol
+Kontrol edilecek puan varsa sınav sayfasında **Hızlı kontrol** düğmesi çıkar. Emin olunamayan her puan sırayla gösterilir:
+puanın kağıttaki resmi, nedeni ve okumaların önerdiği değerler (ör. “S5 · tam puan 15”, düğmeler **4 · 9 · 14**). Doğru değere
+tıklayın ya da rakam tuşuna basın (1, 2, 3…; **0** = boş). Değer listede yoksa yazıp **Enter**; **→** atlar. Seçtiğiniz değer
+kaydedilir, uyarısı kalkar ve sıradaki puana geçilir. Okunan değer zaten doğruysa onun düğmesine basmanız yeterli (uyarı kalkar).
+Sonunda uyarısı kalmayan kağıtları tek düğmeyle onaylayabilirsiniz. Puanı kağıtta bulunamayan sorularda kağıdın tamamı gösterilir.
+
 ## Sınıf listesiyle öğrenci bulma
 Sınıf listesi varsa, numara ve isim listeyle karşılaştırılır:
 - Numara listede var ve isim benziyorsa → öğrenci kesin bulunur (el yazısı isim kötü okunsa bile).
@@ -171,14 +178,20 @@ Sınıf listesi varsa, numara ve isim listeyle karşılaştırılır:
 1. Kurşun kalem, basılı yazı ve siyah izler silinir; yalnızca renkli tükenmez kalem kalır (bkz. “Kurşun kalem neden okunmuyor?”).
 2. Puanların yeri şablondan alınır; şablon yoksa renkli mürekkepten kendiliğinden bulunur (öğretmenin yuvarlak içindeki puanları).
 3. Bir kağıdın bütün puan kutuları harfli tek bir görüntüye dizilip birlikte okunur; bu dört kez, her seferinde farklı kırpım
-   ve farklı yerleşimle yapılır, bir kez de süzgeçsiz görüntüyle. Tutmayan kutu tek tek, yakından yeniden okunur ve işaretlenir.
+   ve farklı yerleşimle yapılır, bir kez de süzgeçsiz görüntüyle. Tutmayan kutular yeni kırpımlarla yeniden okunur ve işaretlenir
+   (şablonsuz okumada yine toplu görüntüde ve dar kırpımla: ölçümlerde tutmayan kutularda tek tek yakından okuma %29, toplu dar
+   kırpım %50-66 doğruydu). Dairenin yanına sızan basılı yazı (dairenin altında kalan “3)”) ve soluk renkli filigranlar
+   okumadan önce ayıklanır.
 4. Şablonsuz okumada her puanın yanındaki basılı soru numarası ("5-)") bilgisayardaki metin tanımayla aranır ve okuma
    sırasıyla (sütun, satır, soldan sağa) birleştirilir. Bulunan numaralar sırayı doğrulamazsa ya da çelişirse, numarasıyla
    doğrulanmamış her hücre işaretlenir: kaymış bir eşleştirme sessiz kalmaz. Ters ya da yan çekilmiş sayfa önce düzeltilir.
 5. Ad ve numara sayfanın üst kısmından okunur; sınıf listesi varsa onunla eşleştirilir.
 
 Gerçek bir 10-C matematik kağıdında (2 sayfa, iki sütun, çok karalama, kağıdın üstünde el) ilk sürüm şablonsuz 10 sorudan 5'ini
-buluyordu; şimdiki sürüm şablonla da şablonsuz da 10'unu doğru okuyor.
+buluyordu; şimdiki sürüm şablonla da şablonsuz da 10'unu doğru okuyor. Gerçek kağıt testi (5 kağıt, 39 puan: A/B maddeli,
+isimsiz, 5'i atlanmış numaralı, Din, 2 sayfalık) 39/39; şablonlu test 20/20. İnternetten indirilen boş sınav kağıtlarına gerçek
+öğretmen puanları yapıştırılarak üretilen zorlayıcı sette (sıkışık a-e maddeleri, renkli basılı öğeler) daha düşük; oradaki
+yanlışların hepsi kontrole düşüyor.
 **İkinci model (isteğe bağlı):** ⚙ Ayarlar → “Çapraz kontrol modeli”. Varsayılan kapalı; denenen minicpm-v:8b Türkçe el yazısında
 ana modelden zayıf çıktı ve doğru okunan puanların bir kısmını gereksiz yere kontrole düşürdü.
 

@@ -119,6 +119,7 @@ function closeModal() {
   $modal.hidden = true;
   $modalBody.innerHTML = "";
   state.reviewId = null;
+  state.quick = null;
 }
 $modal.addEventListener("click", (e) => {
   if (e.target === $modal || e.target.closest("[data-close]")) closeModal();
@@ -656,9 +657,11 @@ function renderStats() {
     <span><b>${done.length}</b> okundu</span>
     ${busy ? `<span><b>${busy}</b> sırada${queued ? ` · ~${mins} dk` : ""}</span>` : ""}
     ${warn ? `<span class="w"><b>${warn}</b> kontrol edilmeli</span>` : ""}
+    ${quickQueue().length ? `<button class="btn primary sm" id="quick-btn" title="Emin olunamayan puanları resmine bakarak tek tıkla düzeltin">Hızlı kontrol · ${quickQueue().length} puan</button>` : ""}
     ${avg !== null ? `<span>ortalama <b>${fmt(Math.round(avg * 10) / 10)}</b></span>` : ""}
     ${roster.length ? `<a href="#" id="missing-link" class="${missing.length ? "" : "muted"}"><b>${missing.length}</b> / ${roster.length} öğrencinin kağıdı yok</a>` : ""}`;
   document.getElementById("missing-link")?.addEventListener("click", (e) => { e.preventDefault(); missingDialog(); });
+  document.getElementById("quick-btn")?.addEventListener("click", quickReview);
   const counts = { hepsi: ks.length, kontrol: warn, okunuyor: busy };
   if (state.filter !== "hepsi" && counts[state.filter] === 0) state.filter = "hepsi";
   document.getElementById("filter").innerHTML = [["hepsi", "Tümü"], ["kontrol", "Kontrol"], ["okunuyor", "Sırada"]]
@@ -1337,6 +1340,117 @@ async function shrink(file, maxSide = 2400) {
     return file;
   }
 }
+
+// ------------------------------------------------------------ hızlı kontrol
+
+/** Kontrol edilecek puan hücreleri (onaylanmamış, okunmuş kağıtlarda), tablodaki sırayla. */
+function quickQueue() {
+  const list = state.exam.kayitlar.filter((r) => r.durum === "tamam" && !r.onaylandi);
+  if (state.sort === "no") {
+    const key = (r) => (/^\d+$/.test(r.ogrenci_no || "") ? +r.ogrenci_no : Infinity);
+    list.sort((a, b) => key(a) - key(b));
+  } else {
+    list.sort((a, b) => (b.eklenme || 0) - (a.eklenme || 0));
+  }
+  const out = [];
+  for (const r of list) {
+    state.exam.tam_puanlar.forEach((_, i) => { if (r.hucre_uyarilari?.[`p${i}`]) out.push({ id: r.id, i }); });
+  }
+  return out;
+}
+
+/** Hızlı kontrol: emin olunamayan her puan hücresi tek tek gösterilir — puanın kağıttaki resmi ve okumaların önerdiği
+ *  değerler. Öğretmen doğru değeri tek tıkla (ya da rakam tuşuyla) seçer, hücrenin uyarısı kalkar, sıradakine geçilir. */
+function quickReview() {
+  const queue = quickQueue();
+  if (!queue.length) return toast("Kontrol edilecek puan yok");
+  let k = 0, fixed = 0, skipped = 0, busy = false;
+  openModal(`${head("Hızlı kontrol")}<div class="m-body qk" id="qk"></div>`);
+  const box = document.getElementById("qk");
+  const current = () => {
+    // kayıt bu arada değişmiş olabilir (yoklama, başka düzeltme): uyarısı kalkmış hücreler atlanır
+    while (k < queue.length) {
+      const it = queue[k];
+      const r = state.exam.kayitlar.find((x) => x.id === it.id);
+      if (r && r.durum === "tamam" && !r.onaylandi && r.hucre_uyarilari?.[`p${it.i}`]) return { ...it, r };
+      k++;
+    }
+    return null;
+  };
+  const show = () => {
+    const c = current();
+    if (!c) return finish();
+    const { r, i } = c;
+    const mx = state.exam.tam_puanlar[i];
+    const cur = r.puanlar?.[i];
+    const opts = [...new Set([...(cur !== null && cur !== undefined ? [cur] : []), ...(r.secenekler?.[i] || [])])]
+      .filter((v) => v !== null && v !== undefined).slice(0, 6);
+    const cell = r.kutu_resimleri?.[i];
+    const src = cell || r.resimler?.[0];
+    box.innerHTML = `
+      <div class="qk-top"><span><b>${esc(r.ad_soyad || "Adsız")}</b>${r.ogrenci_no ? ` · No ${esc(r.ogrenci_no)}` : ""}</span>
+        <span class="qk-n">${k + 1} / ${queue.length}</span></div>
+      <div class="qk-q">S${esc(qlab(i))} <small>tam puan ${fmt(mx)}</small></div>
+      <div class="qk-why">${esc(r.hucre_uyarilari[`p${i}`])}</div>
+      ${src ? `<div class="qk-img${cell ? "" : " page"}"><img src="/api/sinavlar/${state.exam.id}/resim/${src}" alt="S${esc(qlab(i))} puanı"></div>` : ""}
+      ${cell ? "" : `<p class="hint">Bu sorunun puanı kağıtta bulunamadı; kağıdın tamamı gösteriliyor.</p>`}
+      <div class="qk-opts">${opts.map((v, j) => `<button class="btn${v === cur ? " primary" : ""}" data-v="${v}"><kbd>${j + 1}</kbd>${fmt(v)}${v > mx ? " ⚠" : ""}</button>`).join("")}
+        <button class="btn" data-v="0" title="Öğrenci bu sorudan puan almamış"><kbd>0</kbd>Boş (0)</button></div>
+      <div class="qk-other"><input inputmode="decimal" placeholder="Başka değer" aria-label="Başka değer">
+        <button class="btn" data-save>Kaydet</button><button class="btn" data-skip>Atla <kbd>→</kbd></button></div>
+      <p class="hint">Rakam tuşuyla seçin${opts.length ? ` (1–${opts.length})` : ""}; yazdığınız değeri Enter kaydeder.</p>`;
+    box.querySelectorAll("[data-v]").forEach((b) => (b.onclick = () => choose(+b.dataset.v)));
+    const input = box.querySelector(".qk-other input");
+    const save = () => {
+      const v = parseScore(input.value);
+      if (v === null || v === undefined || Number.isNaN(v)) return toast("Geçerli bir puan yazın", { err: true });
+      choose(v);
+    };
+    box.querySelector("[data-save]").onclick = save;
+    input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); save(); } };
+    box.querySelector("[data-skip]").onclick = skip;
+    state.quick = { opts, skip };
+  };
+  const choose = async (v) => {
+    if (busy) return;
+    const c = current();
+    if (!c) return;
+    busy = true;
+    const ok = await patchRecord(c.id, { puan: { soru: c.i, deger: v, teyit: true } });
+    busy = false;
+    if (!ok) return;
+    fixed++;
+    k++;
+    show();
+  };
+  const skip = () => { skipped++; k++; show(); };
+  const finish = () => {
+    state.quick = null;
+    const clean = state.exam.kayitlar.filter((r) => r.durum === "tamam" && !r.onaylandi && !hasWarn(r));
+    box.innerHTML = `<p><b>${fixed}</b> puan kaydedildi${skipped ? `, <b>${skipped}</b> atlandı` : ""}.</p>
+      ${clean.length ? `<p>${clean.length} kağıdın hiç uyarısı kalmadı.</p>
+        <div class="qk-opts"><button class="btn primary" id="qk-confirm">Uyarısı kalmayan ${clean.length} kağıdı onayla</button></div>` : ""}
+      <div class="qk-opts"><button class="btn" data-close>Kapat</button></div>`;
+    document.getElementById("qk-confirm")?.addEventListener("click", async () => {
+      let done = 0;
+      for (const r of clean) {
+        try { await api(`/api/sinavlar/${state.exam.id}/kagit/${r.id}`, json("PATCH", { onaylandi: true, yalniz_uyarisiz: true })); done++; } catch {}
+      }
+      closeModal();
+      toast(`${done} kağıt onaylandı`);
+      reload();
+    });
+  };
+  show();
+}
+
+document.addEventListener("keydown", (e) => {
+  if ($modal.hidden || !state.quick || e.target.tagName === "INPUT" || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === "ArrowRight") { e.preventDefault(); state.quick.skip(); return; }
+  if (!/^[0-9]$/.test(e.key)) return;
+  const b = document.querySelector(e.key === "0" ? '#qk [data-v="0"]' : `#qk .qk-opts button:nth-child(${e.key})`);
+  if (b && b.dataset.v !== undefined) { e.preventDefault(); b.click(); }
+});
 
 // ------------------------------------------------------------ Excel, liste, diğer
 

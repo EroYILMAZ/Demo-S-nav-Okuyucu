@@ -291,6 +291,7 @@ def _process(exam_id: str, rec_id: str) -> None:
             kimlik_elle=False,  # yeniden okundu: öğretmenin eski kimlik düzeltmesi geçersiz
             hizalanamayan=result.get("hizalanamayan") or [],
             okuma_uyarilari=list(result.get("uyarilar") or []),
+            secenekler={k: v for k, v in (result.get("secenekler") or {}).items() if int(k) < n},
             ilerleme="",
             motor_deneme=0,
             sure=round(time.time() - started, 1),
@@ -747,14 +748,15 @@ def _remap_cells(e: dict, plan: list, old_labels: list[str], dropped_images: lis
         sup_old = r.get("supheli") or {}
         alt_old = r.get("eminlik_alt") or {}
         box_old = r.get("kutu_resimleri") or {}
-        p_new, conf_new, sup_new, alt_new, box_new = [], [], {}, {}, {}
+        opt_old = r.get("secenekler") or {}
+        p_new, conf_new, sup_new, alt_new, box_new, opt_new = [], [], {}, {}, {}, {}
         for j, (kind, src) in enumerate(plan):
             vals = [p_old[i] if i < len(p_old) else None for i in src]
             if kind == "ayni":
                 i = src[0]
                 p_new.append(vals[0])
                 conf_new.append(conf_old[i] if i < len(conf_old) else 0.0)
-                for old, new in ((sup_old, sup_new), (alt_old, alt_new), (box_old, box_new)):
+                for old, new in ((sup_old, sup_new), (alt_old, alt_new), (box_old, box_new), (opt_old, opt_new)):
                     if str(i) in old:
                         new[str(j)] = old[str(i)]
                 continue
@@ -777,7 +779,7 @@ def _remap_cells(e: dict, plan: list, old_labels: list[str], dropped_images: lis
         r["puanlar"] = p_new
         if r.get("eminlik_puan"):
             r["eminlik_puan"] = conf_new
-        r["supheli"], r["eminlik_alt"], r["kutu_resimleri"] = sup_new, alt_new, box_new
+        r["supheli"], r["eminlik_alt"], r["kutu_resimleri"], r["secenekler"] = sup_new, alt_new, box_new, opt_new
     tpl = e.get("sablon") or {}
     if tpl.get("kutular"):
         # aynı kalan hücrelerin kutuları yeni numarasıyla; ad/numara (0) ve toplam (-1) kutuları olduğu gibi
@@ -1137,6 +1139,7 @@ def kagit_tamamla(exam_id: str, rec_id: str):
 class CellIn(BaseModel):
     soru: int  # 0'dan başlayan soru sırası
     deger: float | None
+    teyit: bool = False  # öğretmen okunan değeri doğru buldu (değer değişmese de hücrenin uyarısı kalksın)
 
 
 class RecordIn(BaseModel):
@@ -1156,9 +1159,9 @@ def kagit_duzenle(exam_id: str, rec_id: str, body: RecordIn):
     _exam_or_404(exam_id)
     edits = body.model_dump(exclude_defaults=True)
 
-    def set_cell(r: dict, n: int, i: int, value: float | None) -> None:
+    def set_cell(r: dict, n: int, i: int, value: float | None, confirm: bool = False) -> None:
         puanlar = (list(r.get("puanlar") or []) + [None] * n)[:n]
-        if puanlar[i] == value:
+        if puanlar[i] == value and not confirm:
             return
         puanlar[i] = value
         r["puanlar"] = puanlar
@@ -1203,7 +1206,7 @@ def kagit_duzenle(exam_id: str, rec_id: str, body: RecordIn):
         if body.puan is not None:
             if not 0 <= body.puan.soru < n:
                 raise HTTPException(400, "Geçersiz soru")
-            set_cell(r, n, body.puan.soru, body.puan.deger)
+            set_cell(r, n, body.puan.soru, body.puan.deger, body.puan.teyit)
         if body.puanlar is not None:
             new = (list(body.puanlar) + [None] * n)[:n]
             for i in range(n):
